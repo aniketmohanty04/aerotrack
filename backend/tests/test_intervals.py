@@ -271,7 +271,9 @@ async def test_concurrent_forecast_requests_locking():
 @pytest.mark.asyncio
 async def test_pipeline_timings_logged_and_present():
     """Verify timings dictionary is present in the response with non-negative timing values."""
-    result = await train_and_forecast_pm25(28.61, 77.23, allow_demo=True)
+    mock_df = make_synthetic_history(120)
+    with patch("backend.ml_model.fetch_historical_air_quality", return_value=(mock_df, 0, False)):
+        result = await train_and_forecast_pm25(28.61, 77.23, allow_demo=True)
     assert "timings" in result
     timings = result["timings"]
     expected_keys = [
@@ -310,3 +312,19 @@ def test_insufficient_calibration_samples_fallback():
     )
     assert quantiles == {}
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_model_cache_hit_returns_cached_prediction():
+    """Verify second request for identical location returns immediately from MODEL_CACHE."""
+    with patch("backend.ml_model.fetch_historical_air_quality") as mock_fetch:
+        mock_fetch.return_value = (make_synthetic_history(150), 0, False)
+        res1 = await train_and_forecast_pm25(28.6139, 77.2090, allow_demo=True)
+        assert res1["status"] == "success"
+        initial_call_count = mock_fetch.call_count
+
+        # Second call should hit MODEL_CACHE without calling fetch_historical_air_quality again
+        res2 = await train_and_forecast_pm25(28.6139, 77.2090, allow_demo=True)
+        assert res2["status"] == "success"
+        assert res2 == res1
+        assert mock_fetch.call_count == initial_call_count

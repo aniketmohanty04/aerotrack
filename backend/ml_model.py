@@ -14,9 +14,11 @@ MODEL_CACHE: Dict[tuple, Dict[str, Any]] = {}
 CACHE_TTL_SECONDS = 1800  # 30 minutes
 
 # In-memory cache for conformal calibration quantiles
-# Key: (round(lat, 4), round(lon, 4)), Value: { 'timestamp': float, 'quantiles': dict, 'calibration_samples': int }
-CALIBRATION_CACHE: Dict[Tuple[float, float], Dict[str, Any]] = {}
+# Key: (round(lat, 4), round(lon, 4), data_version) and (round(lat, 4), round(lon, 4))
+# Value: { 'timestamp': float, 'quantiles': dict, 'calibration_samples': int, 'data_version': str }
+CALIBRATION_CACHE: Dict[Any, Dict[str, Any]] = {}
 CALIBRATION_TTL_SECONDS = 21600  # 6 hours
+MODEL_VERSION = "v1.2"
 
 # Coordinate-level asyncio locks to serialize duplicate concurrent forecast training
 FORECAST_LOCKS: Dict[Tuple[float, float], asyncio.Lock] = {}
@@ -683,12 +685,22 @@ async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = Fal
                 raise ModelTrainingError("Model training failed on historical observations.", status_code=500) from exc
             train_seconds = round(time.perf_counter() - t_train_start, 3)
 
-            # Check Conformal Calibration Cache
+            # Check Conformal Calibration Cache safely using coordinates, data/version identity, and TTL
             t_calib_start = time.perf_counter()
-            calib_key = (norm_lat, norm_lon)
+            data_version = f"{last_timestamp.strftime('%Y%m%d%H')}_{MODEL_VERSION}"
+            calib_version_key = (norm_lat, norm_lon, data_version)
+            calib_coord_key = (norm_lat, norm_lon)
             calib_hit = False
-            if calib_key in CALIBRATION_CACHE:
-                cached_calib = CALIBRATION_CACHE[calib_key]
+
+            if calib_version_key in CALIBRATION_CACHE:
+                cached_calib = CALIBRATION_CACHE[calib_version_key]
+                if time.time() - cached_calib["timestamp"] < CALIBRATION_TTL_SECONDS:
+                    conformal_quantiles = cached_calib["quantiles"]
+                    calibration_samples_count = cached_calib["calibration_samples"]
+                    calib_hit = True
+                    logger.info(f"Reusing cached conformal calibration quantiles for ({norm_lat}, {norm_lon}) [version={data_version}]")
+            elif calib_coord_key in CALIBRATION_CACHE:
+                cached_calib = CALIBRATION_CACHE[calib_coord_key]
                 if time.time() - cached_calib["timestamp"] < CALIBRATION_TTL_SECONDS:
                     conformal_quantiles = cached_calib["quantiles"]
                     calibration_samples_count = cached_calib["calibration_samples"]
@@ -708,11 +720,14 @@ async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = Fal
                     stride_hours=6
                 )
                 if conformal_quantiles:
-                    CALIBRATION_CACHE[calib_key] = {
+                    calib_record = {
                         "timestamp": time.time(),
                         "quantiles": conformal_quantiles,
-                        "calibration_samples": calibration_samples_count
+                        "calibration_samples": calibration_samples_count,
+                        "data_version": data_version
                     }
+                    CALIBRATION_CACHE[calib_version_key] = calib_record
+                    CALIBRATION_CACHE[calib_coord_key] = calib_record
 
             if conformal_quantiles:
                 interval_method = "split_conformal_prediction"

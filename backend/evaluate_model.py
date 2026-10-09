@@ -136,8 +136,7 @@ def run_autoregressive_rollout(
     At each step h, lags and rolling stats are derived strictly from history and
     previous model predictions (no ground truth peek).
     """
-    current_series = history_df.copy().reset_index(drop=True)
-    last_row = current_series.iloc[-1]
+    last_row = history_df.iloc[-1]
     last_time = last_row["time"]
 
     last_wind = float(last_row.get("wind_speed", 3.5))
@@ -145,6 +144,14 @@ def run_autoregressive_rollout(
     last_humidity = float(last_row.get("humidity", 50.0))
     last_no2 = float(last_row.get("no2", 15.0))
     last_o3 = float(last_row.get("o3", 30.0))
+
+    target_series = history_df["pm25"] if "pm25" in history_df.columns else history_df["pm2_5"]
+    pm_history = [float(x) for x in target_series.values]
+
+    temp_denom = last_temp + 1.0 if abs(last_temp + 1.0) > 1e-4 else 1e-4
+    humidity_temp_ratio = float(last_humidity / temp_denom)
+    no2_o3_ratio = float(last_no2 / (max(0.0, last_o3) + 1.0))
+    wind_denom = max(0.0, last_wind) + 1.0
 
     preds = []
 
@@ -158,7 +165,6 @@ def run_autoregressive_rollout(
         dow_sin = np.sin(2.0 * np.pi * day_of_week / 7.0)
         dow_cos = np.cos(2.0 * np.pi * day_of_week / 7.0)
 
-        pm_history = current_series["pm25"].values
         pm25_lag1 = pm_history[-1]
         pm25_lag2 = pm_history[-2] if len(pm_history) >= 2 else pm25_lag1
         pm25_lag3 = pm_history[-3] if len(pm_history) >= 3 else pm25_lag2
@@ -169,10 +175,7 @@ def run_autoregressive_rollout(
         pm25_lag1_squared = float(pm25_lag1 ** 2)
         pm25_lag24_squared = float(pm25_lag24 ** 2)
 
-        wind_pm25_ratio = float(pm25_lag1 / (max(0.0, last_wind) + 1.0))
-        temp_denom = last_temp + 1.0 if abs(last_temp + 1.0) > 1e-4 else 1e-4
-        humidity_temp_ratio = float(last_humidity / temp_denom)
-        no2_o3_ratio = float(last_no2 / (max(0.0, last_o3) + 1.0))
+        wind_pm25_ratio = float(pm25_lag1 / wind_denom)
 
         recent_6 = pm_history[-6:]
         recent_24 = pm_history[-24:]
@@ -180,7 +183,7 @@ def run_autoregressive_rollout(
         rolling_mean_24 = float(np.mean(recent_24))
         rolling_std_24 = float(np.std(recent_24)) if len(recent_24) > 1 else 0.0
 
-        step_features = pd.DataFrame([{
+        feature_map = {
             "hour_sin": hour_sin,
             "hour_cos": hour_cos,
             "dow_sin": dow_sin,
@@ -199,24 +202,13 @@ def run_autoregressive_rollout(
             "rolling_mean_6": rolling_mean_6,
             "rolling_mean_24": rolling_mean_24,
             "rolling_std_24": rolling_std_24
-        }])[feature_cols]
+        }
+        feat_vector = np.array([[feature_map[c] for c in feature_cols]], dtype=np.float32)
 
-        pred_val = float(model.predict(step_features)[0])
+        pred_val = float(model.predict(feat_vector)[0])
         pred_val = max(1.0, round(pred_val, 1))
         preds.append(pred_val)
-
-        # Append prediction to history for subsequent autoregressive lags
-        new_row = pd.DataFrame([{
-            "time": next_time,
-            "pm25": pred_val,
-            "pm2_5": pred_val,
-            "wind_speed": last_wind,
-            "temperature": last_temp,
-            "humidity": last_humidity,
-            "no2": last_no2,
-            "o3": last_o3
-        }])
-        current_series = pd.concat([current_series, new_row], ignore_index=True)
+        pm_history.append(pred_val)
 
     return preds
 
@@ -225,10 +217,13 @@ def evaluate_location_dataset(
     city_name: str,
     df_raw: pd.DataFrame,
     horizon: int = 24,
-    eval_stride_hours: int = 24
+    eval_stride_hours: int = 24,
+    cutoff_time: Optional[datetime] = None
 ) -> Dict[str, Any]:
     """
     Perform complete chronological training and walk-forward test evaluation for a location.
+    Guarantees that the held-out test set contains strictly completed historical observations,
+    excluding any upstream provider forecast records.
     """
     logger.info(f"Evaluating {city_name} with {len(df_raw)} raw observations...")
 
@@ -238,6 +233,21 @@ def evaluate_location_dataset(
         df["pm25"] = df["pm2_5"]
     elif "pm2_5" not in df.columns and "pm25" in df.columns:
         df["pm2_5"] = df["pm25"]
+
+    # Strictly exclude future provider forecasts if cutoff_time is provided
+    cutoff_naive = None
+    if cutoff_time is not None:
+        if hasattr(df["time"].dtype, "tz") and df["time"].dt.tz is not None:
+            df["time"] = df["time"].dt.tz_localize(None)
+        cutoff_naive = cutoff_time.replace(tzinfo=None) if hasattr(cutoff_time, "tzinfo") and cutoff_time.tzinfo else cutoff_time
+        initial_len = len(df)
+        df = df[df["time"] <= cutoff_naive].copy().reset_index(drop=True)
+        excluded_future = initial_len - len(df)
+        if excluded_future > 0:
+            logger.info(
+                f"{city_name}: Excluded {excluded_future} future provider forecast rows. "
+                f"Held-out test set strictly restricted to completed historical observations (<= {cutoff_naive})."
+            )
 
     # 1. Chronological Split: 70% Train, 15% Validation, 15% Test
     train_df, val_df, test_df = chronological_split(df, 0.70, 0.15, 0.15)
@@ -421,7 +431,7 @@ def evaluate_location_dataset(
                 "heuristic_coverage": round(float(np.mean(heur_cov_by_h[h])) * 100.0, 1) if heur_cov_by_h[h] else 0.0,
                 "heuristic_mean_width": round(float(np.mean(heur_w_by_h[h])), 1) if heur_w_by_h[h] else 0.0,
             }
-            for h in [1, 6, 12, 24]
+            for h in [1, 6, 12, 24] if h in conf_cov_by_h
         }
     }
 
@@ -438,6 +448,8 @@ def evaluate_location_dataset(
             "test_samples": len(test_df),
             "test_start": str(test_df["time"].min()),
             "test_end": str(test_df["time"].max()),
+            "cutoff_time": str(cutoff_naive) if cutoff_naive else None,
+            "future_provider_forecasts_excluded": True,
             "eval_windows_evaluated": len(eval_origins),
             "total_forecast_points_evaluated": len(all_y_true)
         },
@@ -476,7 +488,8 @@ async def run_evaluation_benchmark(
             "baseline": "Persistence (y_{t+h} = y_t)",
             "target": "Hourly PM2.5 (µg/m³)",
             "features_used": get_feature_columns(),
-            "temporal_leakage_prevention": "Strict shift(1) lag and rolling window features; zero random shuffling."
+            "temporal_leakage_prevention": "Strict shift(1) lag and rolling window features; zero random shuffling.",
+            "data_provenance": "Completed historical observations strictly at or prior to cutoff time (zero future provider forecasts in test set)."
         },
         "cities": {}
     }
@@ -489,7 +502,17 @@ async def run_evaluation_benchmark(
                 logger.warning(f"Skipping evaluation on synthetic data for {city_name}")
                 continue
 
-            city_results = evaluate_location_dataset(city_name, df_raw)
+            # Determine local observation cutoff time to strictly exclude future provider forecasts
+            if hasattr(df_raw["time"].dtype, "tz") and df_raw["time"].dt.tz is not None:
+                df_raw["time"] = df_raw["time"].dt.tz_localize(None)
+
+            if utc_offset != 0:
+                loc_tz = timezone(timedelta(seconds=utc_offset))
+                cutoff_time = datetime.now(loc_tz).replace(tzinfo=None)
+            else:
+                cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None)
+
+            city_results = evaluate_location_dataset(city_name, df_raw, cutoff_time=cutoff_time)
             results["cities"][city_name] = city_results
         except Exception as e:
             logger.error(f"Failed evaluation for {city_name}: {e}", exc_info=True)

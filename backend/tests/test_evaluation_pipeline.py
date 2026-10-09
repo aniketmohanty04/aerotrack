@@ -123,3 +123,21 @@ def test_persistence_baseline():
 
     assert len(preds) == 24
     assert np.all(preds == 37.5)
+
+
+def test_evaluate_location_dataset_excludes_future_provider_forecasts():
+    """Verify that evaluate_location_dataset excludes records past cutoff_time so test set contains only completed observations."""
+    from backend.evaluate_model import evaluate_location_dataset
+    # Generate 120 hours: first 96 hours are historical, next 24 hours are future provider forecast
+    df_all = make_dummy_timeseries(n_hours=120, start_time="2026-08-01T00:00")
+    cutoff = datetime.fromisoformat("2026-08-04T23:00")  # Exactly hour 95
+
+    res = evaluate_location_dataset("TestCity", df_all, horizon=12, eval_stride_hours=12, cutoff_time=cutoff)
+    summary = res["dataset_summary"]
+
+    assert summary["future_provider_forecasts_excluded"] is True
+    # Verify that total observations evaluated is 96 (0..95), and future 24 hours were excluded
+    assert summary["total_observations"] == 96
+    # Verify the test set end time does not exceed cutoff
+    test_end = datetime.fromisoformat(summary["test_end"])
+    assert test_end <= cutoff
