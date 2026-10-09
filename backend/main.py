@@ -30,7 +30,7 @@ app.add_middleware(
 )
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     return {
         "name": "AeroTrack Air Quality & Forecasting API",
