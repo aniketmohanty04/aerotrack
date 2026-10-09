@@ -245,23 +245,47 @@ async def fetch_historical_air_quality(
             status_code=422
         )
 
-    # Linear interpolation and forward/backward fill on gaps for genuine observations
-    df = df.interpolate(method="linear").bfill().ffill()
+    # Return raw sorted numeric DataFrame without cross-boundary interpolation.
+    # Imputation is performed strictly on historical observations after cutoff partitioning!
+    return df, utc_offset_seconds, False
 
-    # For auxiliary weather columns, if entirely NaN, fill with neutral atmospheric defaults
-    # (Note: PM2.5 is guaranteed genuine by the valid_pm25_count check above!)
-    if df["no2"].isna().all():
+
+def clean_and_impute_series(
+    df: pd.DataFrame,
+    min_valid_samples: int = 50,
+    target_col: str = "pm25"
+) -> pd.DataFrame:
+    """
+    Interpolate and impute missing observations strictly within the historical boundary.
+    Must be called on historical data AFTER filtering to the historical cutoff
+    so that future observations cannot leak backwards via bfill() or interpolation.
+    """
+    df = df.copy()
+    col = target_col if target_col in df.columns else "pm2_5"
+    valid_pm25 = int(df[col].notna().sum()) if col in df.columns else 0
+    if valid_pm25 < min_valid_samples:
+        raise InsufficientDataError(
+            f"Insufficient valid PM2.5 observations in historical window ({valid_pm25} valid readings; minimum required is {min_valid_samples}).",
+            status_code=422
+        )
+
+    # Linear interpolation strictly within historical observations,
+    # followed by ffill() and bfill() strictly within this historical partition.
+    df = df.interpolate(method="linear").ffill().bfill()
+
+    # Fill auxiliary atmospheric defaults if completely missing
+    if "no2" in df.columns and df["no2"].isna().all():
         df["no2"] = 15.0
-    if df["o3"].isna().all():
+    if "o3" in df.columns and df["o3"].isna().all():
         df["o3"] = 30.0
-    if df["wind_speed"].isna().all():
+    if "wind_speed" in df.columns and df["wind_speed"].isna().all():
         df["wind_speed"] = 3.5
-    if df["temperature"].isna().all():
+    if "temperature" in df.columns and df["temperature"].isna().all():
         df["temperature"] = 20.0
-    if df["humidity"].isna().all():
+    if "humidity" in df.columns and df["humidity"].isna().all():
         df["humidity"] = 50.0
 
-    return df, utc_offset_seconds, False
+    return df
 
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -380,12 +404,14 @@ def predict_autoregressive_rollout(
     model: xgb.XGBRegressor,
     history_df: pd.DataFrame,
     feature_cols: List[str],
-    steps: int = 24
+    steps: int = 24,
+    future_weather_df: Optional[pd.DataFrame] = None
 ) -> List[float]:
     """
     Autoregressively roll out predictions over `steps` hours.
     At each step h, lag and rolling features are derived strictly from history
     and previous model predictions (zero future data leakage).
+    Optionally incorporates genuine future meteorological forecasts for prediction hours.
     """
     last_row = history_df.iloc[-1]
     last_time = last_row["time"]
@@ -399,17 +425,33 @@ def predict_autoregressive_rollout(
     target_series = history_df["pm25"] if "pm25" in history_df.columns else history_df["pm2_5"]
     pm_history = [float(x) for x in target_series.values]
 
-    temp_denom = last_temp + 1.0 if abs(last_temp + 1.0) > 1e-4 else 1e-4
-    humidity_temp_ratio = float(last_humidity / temp_denom)
-    no2_o3_ratio = float(last_no2 / (max(0.0, last_o3) + 1.0))
-    wind_denom = max(0.0, last_wind) + 1.0
-
     preds: List[float] = []
 
     for step in range(1, steps + 1):
         next_time = last_time + timedelta(hours=step)
         hour = next_time.hour
         day_of_week = next_time.weekday()
+
+        # Dynamic future weather if available for the corresponding prediction hour;
+        # otherwise gracefully defaults to the latest observed values.
+        if future_weather_df is not None and not future_weather_df.empty:
+            matching_rows = future_weather_df[future_weather_df["time"] == next_time]
+            if not matching_rows.empty:
+                w_row = matching_rows.iloc[0]
+                step_wind = float(w_row.get("wind_speed", last_wind)) if pd.notna(w_row.get("wind_speed")) else last_wind
+                step_temp = float(w_row.get("temperature", last_temp)) if pd.notna(w_row.get("temperature")) else last_temp
+                step_humidity = float(w_row.get("humidity", last_humidity)) if pd.notna(w_row.get("humidity")) else last_humidity
+                step_no2 = float(w_row.get("no2", last_no2)) if pd.notna(w_row.get("no2")) else last_no2
+                step_o3 = float(w_row.get("o3", last_o3)) if pd.notna(w_row.get("o3")) else last_o3
+            else:
+                step_wind, step_temp, step_humidity, step_no2, step_o3 = last_wind, last_temp, last_humidity, last_no2, last_o3
+        else:
+            step_wind, step_temp, step_humidity, step_no2, step_o3 = last_wind, last_temp, last_humidity, last_no2, last_o3
+
+        temp_denom = step_temp + 1.0 if abs(step_temp + 1.0) > 1e-4 else 1e-4
+        humidity_temp_ratio = float(step_humidity / temp_denom)
+        no2_o3_ratio = float(step_no2 / (max(0.0, step_o3) + 1.0))
+        wind_denom = max(0.0, step_wind) + 1.0
 
         hour_sin = math.sin(2.0 * math.pi * hour / 24.0)
         hour_cos = math.cos(2.0 * math.pi * hour / 24.0)
@@ -618,21 +660,29 @@ async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = Fal
             # Fallback to UTC if no offset
             now_local = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        # Find the last row in DataFrame where time <= current time
-        df_past = df[df["time"] <= now_local].copy()
-        if df_past.empty:
+        # 1. STRICT SEPARATION AT HISTORICAL CUTOFF BEFORE ANY IMPUTATION
+        # Strictly isolate observations at or before current time
+        df_past_raw = df[df["time"] <= now_local].copy().reset_index(drop=True)
+        df_future_raw = df[df["time"] > now_local].copy().reset_index(drop=True)
+
+        if df_past_raw.empty:
             # Fallback: use the most recent row with non-null pm25
             current_row = df.dropna(subset=["pm25"]).iloc[-1]
-        else:
-            current_row = df_past.iloc[-1]
+            last_idx = df.index[df["time"] == current_row["time"]].tolist()[0]
+            df_past_raw = df.iloc[:last_idx + 1].copy().reset_index(drop=True)
+            df_future_raw = df.iloc[last_idx + 1:].copy().reset_index(drop=True)
 
-        # Retain all past observations up through the current hour for autoregressive state
-        last_idx = df.index[df["time"] == current_row["time"]].tolist()
-        if last_idx:
-            current_time_series = df.iloc[:last_idx[0] + 1].copy().reset_index(drop=True)
-        else:
-            current_time_series = df_past.copy().reset_index(drop=True)
+        # 2. Impute and clean strictly within the historical boundary
+        # bfill() and interpolation cannot peek into future observations!
+        current_time_series = clean_and_impute_series(df_past_raw, min_valid_samples=50)
 
+        # 3. Clean future weather partition separately (without contaminating past)
+        if not df_future_raw.empty:
+            df_future_weather = df_future_raw.interpolate(method="linear").ffill().bfill()
+        else:
+            df_future_weather = None
+
+        current_row = current_time_series.iloc[-1]
         last_timestamp = current_row["time"]
         last_wind = float(current_row["wind_speed"])
         last_temp = float(current_row["temperature"])
@@ -778,21 +828,38 @@ async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = Fal
         predictions: List[Dict[str, Any]] = []
 
         pm_forecast_history = [float(v) for v in current_time_series["pm25"].values]
-        temp_denom = last_temp + 1.0 if abs(last_temp + 1.0) > 1e-4 else 1e-4
-        humidity_temp_ratio = float(last_humidity / temp_denom)
-        no2_o3_ratio = float(last_no2 / (max(0.0, last_o3) + 1.0))
-        wind_denom = max(0.0, last_wind) + 1.0
 
         for step in range(1, 25):
             next_time = last_timestamp + timedelta(hours=step)
             hour = next_time.hour
             day_of_week = next_time.weekday()
 
+            # Dynamic future weather if available for the corresponding prediction hour;
+            # otherwise gracefully defaults to the latest observed values.
+            if df_future_weather is not None and not df_future_weather.empty:
+                matching_rows = df_future_weather[df_future_weather["time"] == next_time]
+                if not matching_rows.empty:
+                    w_row = matching_rows.iloc[0]
+                    step_wind = float(w_row.get("wind_speed", last_wind)) if pd.notna(w_row.get("wind_speed")) else last_wind
+                    step_temp = float(w_row.get("temperature", last_temp)) if pd.notna(w_row.get("temperature")) else last_temp
+                    step_humidity = float(w_row.get("humidity", last_humidity)) if pd.notna(w_row.get("humidity")) else last_humidity
+                    step_no2 = float(w_row.get("no2", last_no2)) if pd.notna(w_row.get("no2")) else last_no2
+                    step_o3 = float(w_row.get("o3", last_o3)) if pd.notna(w_row.get("o3")) else last_o3
+                else:
+                    step_wind, step_temp, step_humidity, step_no2, step_o3 = last_wind, last_temp, last_humidity, last_no2, last_o3
+            else:
+                step_wind, step_temp, step_humidity, step_no2, step_o3 = last_wind, last_temp, last_humidity, last_no2, last_o3
+
+            temp_denom = step_temp + 1.0 if abs(step_temp + 1.0) > 1e-4 else 1e-4
+            humidity_temp_ratio = float(step_humidity / temp_denom)
+            no2_o3_ratio = float(step_no2 / (max(0.0, step_o3) + 1.0))
+            wind_denom = max(0.0, step_wind) + 1.0
+
             # Cyclical temporal encodings
-            hour_sin = np.sin(2.0 * np.pi * hour / 24.0)
-            hour_cos = np.cos(2.0 * np.pi * hour / 24.0)
-            dow_sin = np.sin(2.0 * np.pi * day_of_week / 7.0)
-            dow_cos = np.cos(2.0 * np.pi * day_of_week / 7.0)
+            hour_sin = math.sin(2.0 * math.pi * hour / 24.0)
+            hour_cos = math.cos(2.0 * math.pi * hour / 24.0)
+            dow_sin = math.sin(2.0 * math.pi * day_of_week / 7.0)
+            dow_cos = math.cos(2.0 * math.pi * day_of_week / 7.0)
 
             # Lags from autoregressively updated history
             pm25_lag1 = pm_forecast_history[-1]
@@ -812,9 +879,13 @@ async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = Fal
             # Rolling statistics
             recent_6 = pm_forecast_history[-6:]
             recent_24 = pm_forecast_history[-24:]
-            rolling_mean_6 = float(np.mean(recent_6))
-            rolling_mean_24 = float(np.mean(recent_24))
-            rolling_std_24 = float(np.std(recent_24)) if len(recent_24) > 1 else 0.0
+            rolling_mean_6 = float(sum(recent_6) / len(recent_6))
+            rolling_mean_24 = float(sum(recent_24) / len(recent_24))
+            if len(recent_24) > 1:
+                var_24 = sum((x - rolling_mean_24) ** 2 for x in recent_24) / len(recent_24)
+                rolling_std_24 = float(math.sqrt(var_24))
+            else:
+                rolling_std_24 = 0.0
 
             feature_map = {
                 "hour_sin": hour_sin,

@@ -1,6 +1,6 @@
 # AeroTrack ML Forecasting Evaluation Report
 
-**Date Generated**: 2026-10-09T18:19:50Z (UTC)  
+**Date Generated**: 2026-10-09T19:28:22Z (UTC)  
 **Evaluation Standard**: Chronological Multi-Step Walk-Forward Validation  
 **Target**: Hourly Ground-Level PM2.5 Concentration (µg/m³)  
 **Baseline Benchmark**: Naive Persistence Forecast ($\hat{y}_{t+h} = y_t$)
@@ -29,45 +29,45 @@
 
 ### New Delhi, India
 
-- **Observation Window**: 2026-07-09 00:00:00 to 2026-10-09 23:00:00 (2232 hourly rows)
-- **Train Period**: 2026-07-09 00:00:00 to 2026-09-12 01:00:00 (1562 samples)
-- **Test Period**: 2026-09-26 01:00:00 to 2026-10-09 23:00:00 (335 samples)
+- **Observation Window**: 2026-07-10 00:00:00 to 2026-10-10 00:00:00 (2209 hourly rows)
+- **Train Period**: 2026-07-10 00:00:00 to 2026-09-12 09:00:00 (1546 samples)
+- **Test Period**: 2026-09-26 05:00:00 to 2026-10-10 00:00:00 (332 samples)
 - **Evaluation Windows**: 13 walk-forward 24-hour forecasts (312 predictions evaluated)
 
 #### Overall 24-Hour Horizon Summary
 
 | Model | MAE (µg/m³) | RMSE (µg/m³) | R² | Skill Score vs Persistence |
 | :--- | :---: | :---: | :---: | :---: |
-| **XGBoost (Autoregressive)** | **31.28** | **40.57** | 0.5272 | **+0.2481** |
-| Persistence Baseline | 40.62 | 53.96 | 0.1638 | 0.0000 |
+| **XGBoost (Autoregressive)** | **31.77** | **41.85** | 0.5046 | **+0.2175** |
+| Persistence Baseline | 39.82 | 53.48 | 0.1912 | 0.0000 |
 
 #### Performance by Forecast Lead Time ($h$ hours ahead)
 
 | Lead Time | XGBoost MAE | Persistence MAE | XGBoost RMSE | Persistence RMSE | Skill Score |
 | :---: | :---: | :---: | :---: | :---: | :---: |
-| **+1h** | 2.66 µg/m³ | 6.84 µg/m³ | 3.47 µg/m³ | 8.0 µg/m³ | +0.5662 |
-| **+6h** | 22.88 µg/m³ | 40.18 µg/m³ | 30.35 µg/m³ | 51.96 µg/m³ | +0.4159 |
-| **+12h** | 36.94 µg/m³ | 45.22 µg/m³ | 46.23 µg/m³ | 59.33 µg/m³ | +0.2208 |
-| **+24h** | 49.83 µg/m³ | 57.02 µg/m³ | 56.14 µg/m³ | 66.4 µg/m³ | +0.1545 |
+| **+1h** | 3.01 µg/m³ | 6.75 µg/m³ | 3.49 µg/m³ | 8.0 µg/m³ | +0.5637 |
+| **+6h** | 23.21 µg/m³ | 40.39 µg/m³ | 28.04 µg/m³ | 51.97 µg/m³ | +0.4605 |
+| **+12h** | 40.43 µg/m³ | 45.28 µg/m³ | 49.6 µg/m³ | 59.34 µg/m³ | +0.1641 |
+| **+24h** | 50.29 µg/m³ | 53.41 µg/m³ | 60.57 µg/m³ | 64.24 µg/m³ | +0.0571 |
 
 #### Prediction Interval Evaluation (90% Nominal Target)
 
-- **Calibration Strategy**: Split Conformal Prediction calibrated on validation holdout partition (78 multi-step windows).
+- **Calibration Strategy**: Split Conformal Prediction calibrated on validation holdout partition (30 multi-step windows).
 - **Nominal Coverage Target**: 90.0% ($\alpha = 0.10$).
 
 | Uncertainty Method | Empirical 24h Coverage | Mean Interval Width | Calibration Strategy |
 | :--- | :---: | :---: | :--- |
-| **Split Conformal Prediction** | **92.9%** | **123.5 µg/m³** | Distribution-free, calibrated on holdout residuals |
-| Heuristic Uncertainty Band | 71.8% | 98.0 µg/m³ | Uncalibrated heuristic (step + rolling variance) |
+| **Split Conformal Prediction** | **94.6%** | **138.6 µg/m³** | Distribution-free, calibrated on holdout residuals |
+| Heuristic Uncertainty Band | 71.2% | 99.3 µg/m³ | Uncalibrated heuristic (step + rolling variance) |
 
 ##### Interval Metrics by Forecast Lead Time ($h$ hours ahead)
 
 | Lead Time | Conformal 90% Coverage | Conformal Margin $q^{(h)}$ | Heuristic Coverage | Heuristic Mean Width |
 | :---: | :---: | :---: | :---: | :---: |
-| **+1h** | **100.0%** | ±23.92 µg/m³ | 100.0% | 51.2 µg/m³ |
-| **+6h** | **84.6%** | ±53.24 µg/m³ | 61.5% | 61.6 µg/m³ |
-| **+12h** | **92.3%** | ±71.98 µg/m³ | 53.8% | 91.4 µg/m³ |
-| **+24h** | **92.3%** | ±78.86 µg/m³ | 76.9% | 161.8 µg/m³ |
+| **+1h** | **100.0%** | ±29.07 µg/m³ | 100.0% | 51.2 µg/m³ |
+| **+6h** | **84.6%** | ±43.53 µg/m³ | 69.2% | 60.7 µg/m³ |
+| **+12h** | **100.0%** | ±90.89 µg/m³ | 53.8% | 91.6 µg/m³ |
+| **+24h** | **92.3%** | ±93.85 µg/m³ | 61.5% | 161.8 µg/m³ |
 
 
 ---

@@ -28,6 +28,7 @@ try:
         engineer_features,
         get_feature_columns,
         fetch_historical_air_quality,
+        clean_and_impute_series,
         normalize_coordinates,
         calibrate_conformal_quantiles,
         compute_prediction_interval
@@ -37,6 +38,7 @@ except ImportError:
         engineer_features,
         get_feature_columns,
         fetch_historical_air_quality,
+        clean_and_impute_series,
         normalize_coordinates,
         calibrate_conformal_quantiles,
         compute_prediction_interval
@@ -248,6 +250,9 @@ def evaluate_location_dataset(
                 f"{city_name}: Excluded {excluded_future} future provider forecast rows. "
                 f"Held-out test set strictly restricted to completed historical observations (<= {cutoff_naive})."
             )
+
+    # Clean and interpolate strictly within the isolated historical window
+    df = clean_and_impute_series(df, min_valid_samples=50)
 
     # 1. Chronological Split: 70% Train, 15% Validation, 15% Test
     train_df, val_df, test_df = chronological_split(df, 0.70, 0.15, 0.15)

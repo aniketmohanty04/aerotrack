@@ -53,7 +53,7 @@ To anticipate air quality fluctuations, AeroTrack deploys an on-demand machine l
 - **US EPA AQI Rating Engine**: Breakpoint mapping adhering to US EPA standards, color-coded across all 6 official severity tiers.
 - **7-Day Historical Trends**: Interactive time-series charts displaying 168+ hours of historical data with a metric toggle between Fine Dust PM2.5 (µg/m³) and US AQI.
 - **24-Hour ML Forecast**: On-demand hourly PM2.5 projections generated autoregressively by XGBoost, featuring heuristic uncertainty bands and plain-English summary alerts.
-- **Dual-Layer Reference Lines**: Visual benchmarks displaying the **Safe Limit (15 µg/m³, WHO 2021 Guideline)** and **Caution Limit (35 µg/m³, US EPA Moderate Threshold)**.
+- **Dual-Layer Reference Lines**: Visual benchmarks displaying the **Safe Limit (15 µg/m³, WHO 2021 Guideline)** and **Caution Limit (35.5 µg/m³, US EPA Moderate-to-USG Threshold)**.
 - **Actionable Health Advisories**: Semantic, rule-based recommendations tailored for Outdoor Activities, Home Ventilation, Mask Usage, and Sensitive Demographic Groups.
 
 ---
@@ -125,11 +125,13 @@ The predictive engine employs an autoregressive Extreme Gradient Boosting (XGBoo
    - **Tree Depth**: `max_depth = 4` (prevents overfitting on small local sample sizes)
    - **Learning Rate**: `0.08`
    - **Subsample & Colsample**: `0.85` subsample, `0.85` colsample per tree
-4. **Forecast Method (Autoregressive 24-Step Loop)**:
+4. **Forecast Method (Autoregressive 24-Step Loop with Dynamic Weather Updates)**:
    - For each step `h` in 1 to 24, the model generates an inference for step `h`.
    - The predicted value is appended to the feature array and becomes the new lag-1 input for step `h + 1`. Lags, rolling statistics, and temporal encodings roll forward dynamically.
-5. **Uncertainty Bands**:
-   - Derives step-dependent uncertainty margins from recent historical residual variance:
+   - Dynamic meteorological conditions (wind speed, temperature, humidity, NO₂, O₃) are matched to future forecast hours to capture upcoming weather shifts (with graceful fallback to latest observed values if unavailable).
+5. **Uncertainty Quantification (Split Conformal Prediction & Heuristic Fallback)**:
+   - **Split Conformal Prediction (Calibrated 90% Intervals)**: Evaluates multi-step rolling residual calibrations over historical validation horizons (`calibrate_conformal_quantiles`), producing horizon-specific non-conformity quantiles $q^{(h)}$ to construct distribution-free prediction intervals $[\hat{y}_h - q^{(h)}, \hat{y}_h + q^{(h)}]$ with 90% nominal coverage guarantees ($\alpha = 0.10$).
+   - **Heuristic Bands (Fallback)**: Used strictly when historical samples are sparse (<100 samples) or during mock fallback mode:
      - `Margin_h = 1.645 · sigma_residuals · (1.0 + 0.03 · h)`
      - `Lower_h = max(0, Prediction_h - Margin_h)`
      - `Upper_h = Prediction_h + Margin_h`
@@ -139,7 +141,48 @@ The predictive engine employs an autoregressive Extreme Gradient Boosting (XGBoo
 
 ---
 
-## 5. AQI Standard
+## 5. Reproducible ML Evaluation & Benchmarks
+
+AeroTrack avoids unverified accuracy claims by including an open, fully reproducible evaluation script that validates the forecasting pipeline against a **Naive Persistence Baseline** ($\hat{y}_{t+h} = y_t$).
+
+To eliminate data leakage, the held-out test partition strictly contains completed historical observations (excluding future provider forecasts) and is evaluated chronologically across multi-step walk-forward horizons.
+
+### Reproducing the Benchmark
+Run the reproducible evaluation script against genuine Open-Meteo observations:
+```bash
+python backend/evaluate_model.py --city Delhi
+```
+
+### Verified Benchmark Results (New Delhi, India)
+- **Observation Window**: 2,209 hourly rows (92 days)
+- **Holdout Test Set**: 332 completed historical observations across 13 walk-forward 24-hour windows (312 evaluated forecast steps).
+
+#### Overall 24-Hour Horizon Summary
+
+| Model | MAE (µg/m³) | RMSE (µg/m³) | R² Score | Skill Score vs Persistence |
+| :--- | :---: | :---: | :---: | :---: |
+| **XGBoost (Autoregressive)** | **31.77** | **41.85** | **0.5046** | **+0.2175** (+21.8% RMSE improvement) |
+| Persistence Baseline | 39.82 | 53.48 | 0.1912 | 0.0000 |
+
+#### Performance by Forecast Lead Time ($h$ hours ahead)
+
+| Lead Time | XGBoost MAE | Persistence MAE | XGBoost RMSE | Persistence RMSE | Skill Score |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **+1h** | **3.01 µg/m³** | 6.75 µg/m³ | **3.49 µg/m³** | 8.00 µg/m³ | **+0.5637** |
+| **+6h** | **23.21 µg/m³** | 40.39 µg/m³ | **28.04 µg/m³** | 51.97 µg/m³ | **+0.4605** |
+| **+12h** | **40.43 µg/m³** | 45.28 µg/m³ | **49.60 µg/m³** | 59.34 µg/m³ | **+0.1641** |
+| **+24h** | **50.29 µg/m³** | 53.41 µg/m³ | **60.57 µg/m³** | 64.24 µg/m³ | **+0.0571** |
+
+#### Uncertainty Interval Empirical Coverage (90% Nominal Target)
+
+| Uncertainty Method | Empirical 24h Coverage | Mean Interval Width | Calibration Strategy |
+| :--- | :---: | :---: | :--- |
+| **Split Conformal Prediction** | **94.6%** | **138.6 µg/m³** | Calibrated on validation holdout non-conformity scores |
+| Heuristic Uncertainty Band | 71.2% | 99.3 µg/m³ | Uncalibrated heuristic ($1.645 \cdot \sigma \cdot (1 + 0.03h)$) |
+
+---
+
+## 6. AQI Standard
 
 AeroTrack locks all classification to the official **US Environmental Protection Agency (US EPA)** standards as the single source of truth across all 6 criteria pollutants.
 
@@ -156,14 +199,14 @@ All concentrations are measured in **µg/m³**:
 | **Very Unhealthy** | 201 – 300 | `#8b5cf6` (Purple) | 125.5 – 225.4 | 355 – 424 | 205.9 – 392.0 | 17,634 – 34,808 | 796.6 – 1,582.5 | 1,220.2 – 2,348.1 |
 | **Hazardous** | 301+ | `#7f1d1d` (Maroon) | > 225.4 | > 424 | > 392.0 | > 34,808 | > 1,582.5 | > 2,348.1 |
 
-### WHO 2021 Reference Guideline
+### WHO 2021 Reference Guideline vs. US EPA Breakpoints
 On both the 7-day trend chart and the 24-hour forecast chart, AeroTrack displays two constant visual benchmarks:
 - **Safe Limit (15 µg/m³)**: The World Health Organization (WHO) 2021 recommended 24-hour guideline for PM2.5 exposure.
-- **Caution Limit (35 µg/m³)**: The US EPA threshold boundary separating Good/Moderate from Unhealthy for Sensitive Groups.
+- **Caution Limit (35.5 µg/m³)**: The official US EPA PM2.5 breakpoint where air quality transitions from Moderate (9.1–35.4 µg/m³, AQI 51–100) to Unhealthy for Sensitive Groups (35.5–55.4 µg/m³, AQI 101–150). Under EPA breakpoints, this transition is strictly at 35.5 µg/m³ (not 35.0 µg/m³), distinct from the WHO 15 µg/m³ limit.
 
 ---
 
-## 6. Tech Stack
+## 7. Tech Stack
 
 | Layer | Technologies |
 |---|---|
@@ -180,7 +223,7 @@ On both the 7-day trend chart and the 24-hour forecast chart, AeroTrack displays
 
 ---
 
-## 7. API Endpoints
+## 8. API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -194,7 +237,7 @@ On both the 7-day trend chart and the 24-hour forecast chart, AeroTrack displays
 
 ---
 
-## 8. Running Locally
+## 9. Running Locally
 
 ### Prerequisites
 - **Python**: 3.10 or higher
@@ -207,7 +250,7 @@ On both the 7-day trend chart and the 24-hour forecast chart, AeroTrack displays
 
 #### PowerShell (Windows)
 ```powershell
-cd nexus\backend
+cd backend
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -216,7 +259,7 @@ uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
 #### Bash (Linux / macOS)
 ```bash
-cd nexus/backend
+cd backend
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -229,14 +272,14 @@ uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
 #### PowerShell (Windows)
 ```powershell
-cd nexus\frontend
+cd frontend
 npm install
 npm run dev
 ```
 
 #### Bash (Linux / macOS)
 ```bash
-cd nexus/frontend
+cd frontend
 npm install
 npm run dev
 ```
@@ -246,39 +289,39 @@ npm run dev
 
 ---
 
-## 9. Design Decisions
+## 10. Design Decisions
 
 | Decision | Rationale |
 |---|---|
 | **Open-Meteo over AccuWeather** | Open-Meteo provides free, global, hourly multi-pollutant reanalysis and meteorological data without mandatory API key limits, enabling universal global coverage out of the box. |
 | **XGBoost over LSTM / Deep Learning** | On-demand training for arbitrary coordinates requires sub-2-second latency. XGBoost trains in under 1.5 seconds on CPU, handles missing observations, and consistently outperforms LSTMs on small tabular time-series (~2,200 rows). |
-| **Autoregressive Forecast** | Allows the model to dynamically update lag buffers and moving averages hour-by-hour over 24 steps, maintaining temporal continuity without training 24 separate models. |
+| **Autoregressive Forecast** | Allows the model to dynamically update lag buffers, moving averages, and weather variables hour-by-hour over 24 steps, maintaining temporal continuity without training 24 separate models. |
 | **Two-Layer Caching** | Prevents redundant upstream API hits and unnecessary re-training: 10-minute cache for shared live air quality/trends, and 30-minute cache for trained XGBoost models. |
 | **US EPA AQI Standard** | Standardized, peer-reviewed categorization system across all 6 criteria pollutants with well-defined concentration breakpoints. |
 | **Rule-Based Health Advisory** | Eliminates generative LLM hallucinations and latency for medical guidance, providing deterministic, category-specific recommendations verified against official health guidelines. |
 
 ---
 
-## 10. Known Limitations
+## 11. Known Limitations
 
 - **92-Day Training Window**: Training is bounded to 92 historical days to ensure sub-second API execution and avoid excessive payload sizes, which may under-sample multi-year seasonal patterns.
-- **Heuristic Confidence Bands**: Uncertainty intervals expand via residual variance multipliers rather than full quantile loss regression (`reg:quantileerror`) or Bayesian posterior sampling.
+- **Heuristic Fallback for Sparse Data**: While Split Conformal Prediction provides distribution-free 90% coverage for standard operations, sparse datasets (<100 samples) fallback to residual variance heuristics.
 - **PM2.5-Only Forecast Model**: Machine learning prediction is focused specifically on PM2.5 due to its primary health risk, while other pollutants are monitored via historical trends and current telemetry.
 - **Grid-Based Model Data vs Ground Sensors**: Atmospheric telemetry is derived from spatial grid reanalysis models rather than hyper-local physical street monitors, which can smooth localized micro-climate spikes.
 
 ---
 
-## 11. What I'd Add Next
+## 12. What I'd Add Next
 
 - **OpenAQ Physical Ground-Station Ingestion**: Merge real-time ground-station monitoring feeds alongside satellite reanalysis for ground-truth bias correction.
-- **Quantile Regression Intervals**: Upgrade XGBoost training to use quantile regression loss to produce mathematically rigorous 10th and 90th percentile bounds.
+- **Direct Multi-Quantile Loss Training**: Train dedicated pinball/quantile loss models (`reg:quantileerror`) natively in addition to split conformal prediction.
 - **SHAP (SHapley Additive exPlanations)**: Provide interactive visual feature attribution explaining which atmospheric drivers (e.g. wind drop, rush hour) caused predicted spikes.
 - **Multi-City Comparison**: Side-by-side dashboard comparing air quality across multiple user-selected locations simultaneously.
 - **Automated Threshold Push Notifications**: Browser and webhook alerts when predicted PM2.5 is forecasted to exceed safe levels.
 
 ---
 
-## 12. Author
+## 13. Author
 
 **Aniket Mohanty**  
 Registration No: `25BCE5816`  

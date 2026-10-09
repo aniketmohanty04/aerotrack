@@ -1,5 +1,5 @@
 {
-  "evaluation_timestamp": "2026-10-09T18:19:50Z",
+  "evaluation_timestamp": "2026-10-09T19:28:22Z",
   "methodology": {
     "model_type": "XGBoost Regressor (Autoregressive Recursive 24-Hour Rollout)",
     "split_strategy": "Chronological (70% Train, 15% Validation, 15% Test)",
@@ -32,142 +32,142 @@
     "New Delhi, India": {
       "city": "New Delhi, India",
       "dataset_summary": {
-        "total_observations": 2232,
-        "start_time": "2026-07-09 00:00:00",
-        "end_time": "2026-10-09 23:00:00",
-        "train_samples": 1562,
-        "train_start": "2026-07-09 00:00:00",
-        "train_end": "2026-09-12 01:00:00",
-        "val_samples": 335,
-        "test_samples": 335,
-        "test_start": "2026-09-26 01:00:00",
-        "test_end": "2026-10-09 23:00:00",
-        "cutoff_time": "2026-10-09 23:49:55.018054",
+        "total_observations": 2209,
+        "start_time": "2026-07-10 00:00:00",
+        "end_time": "2026-10-10 00:00:00",
+        "train_samples": 1546,
+        "train_start": "2026-07-10 00:00:00",
+        "train_end": "2026-09-12 09:00:00",
+        "val_samples": 331,
+        "test_samples": 332,
+        "test_start": "2026-09-26 05:00:00",
+        "test_end": "2026-10-10 00:00:00",
+        "cutoff_time": "2026-10-10 00:58:23.600467",
         "future_provider_forecasts_excluded": true,
         "eval_windows_evaluated": 13,
         "total_forecast_points_evaluated": 312
       },
       "overall_24h_evaluation": {
         "xgboost": {
-          "mae": 31.28,
-          "rmse": 40.57,
-          "r2": 0.5272
+          "mae": 31.77,
+          "rmse": 41.85,
+          "r2": 0.5046
         },
         "persistence_baseline": {
-          "mae": 40.62,
-          "rmse": 53.96,
-          "r2": 0.1638
+          "mae": 39.82,
+          "rmse": 53.48,
+          "r2": 0.1912
         },
-        "skill_score_vs_persistence": 0.2481
+        "skill_score_vs_persistence": 0.2175
       },
       "lead_time_breakdown": {
         "lead_1h": {
           "lead_hours": 1,
           "eval_samples": 13,
-          "xgb_mae": 2.66,
-          "xgb_rmse": 3.47,
-          "xgb_r2": 0.9973,
-          "persistence_mae": 6.84,
+          "xgb_mae": 3.01,
+          "xgb_rmse": 3.49,
+          "xgb_r2": 0.9971,
+          "persistence_mae": 6.75,
           "persistence_rmse": 8.0,
-          "skill_score": 0.5662
+          "skill_score": 0.5637
         },
         "lead_6h": {
           "lead_hours": 6,
           "eval_samples": 13,
-          "xgb_mae": 22.88,
-          "xgb_rmse": 30.35,
-          "xgb_r2": 0.5643,
-          "persistence_mae": 40.18,
-          "persistence_rmse": 51.96,
-          "skill_score": 0.4159
+          "xgb_mae": 23.21,
+          "xgb_rmse": 28.04,
+          "xgb_r2": 0.6087,
+          "persistence_mae": 40.39,
+          "persistence_rmse": 51.97,
+          "skill_score": 0.4605
         },
         "lead_12h": {
           "lead_hours": 12,
           "eval_samples": 13,
-          "xgb_mae": 36.94,
-          "xgb_rmse": 46.23,
-          "xgb_r2": 0.4192,
-          "persistence_mae": 45.22,
-          "persistence_rmse": 59.33,
-          "skill_score": 0.2208
+          "xgb_mae": 40.43,
+          "xgb_rmse": 49.6,
+          "xgb_r2": 0.3095,
+          "persistence_mae": 45.28,
+          "persistence_rmse": 59.34,
+          "skill_score": 0.1641
         },
         "lead_24h": {
           "lead_hours": 24,
           "eval_samples": 13,
-          "xgb_mae": 49.83,
-          "xgb_rmse": 56.14,
-          "xgb_r2": 0.2661,
-          "persistence_mae": 57.02,
-          "persistence_rmse": 66.4,
-          "skill_score": 0.1545
+          "xgb_mae": 50.29,
+          "xgb_rmse": 60.57,
+          "xgb_r2": 0.2743,
+          "persistence_mae": 53.41,
+          "persistence_rmse": 64.24,
+          "skill_score": 0.0571
         }
       },
       "interval_evaluation": {
         "nominal_coverage_target": 0.9,
-        "calibration_windows_count": 78,
+        "calibration_windows_count": 30,
         "conformal_quantiles": {
-          "1": 23.92,
-          "2": 25.98,
-          "3": 33.65,
-          "4": 44.05,
-          "5": 48.12,
-          "6": 53.24,
-          "7": 60.31,
-          "8": 64.65,
-          "9": 66.06,
-          "10": 66.06,
-          "11": 69.56,
-          "12": 71.98,
-          "13": 71.98,
-          "14": 71.98,
-          "15": 71.98,
-          "16": 75.33,
-          "17": 75.33,
-          "18": 75.33,
-          "19": 75.33,
-          "20": 75.33,
-          "21": 75.33,
-          "22": 77.02,
-          "23": 78.86,
-          "24": 78.86
+          "1": 29.07,
+          "2": 29.07,
+          "3": 30.04,
+          "4": 34.87,
+          "5": 39.24,
+          "6": 43.53,
+          "7": 48.09,
+          "8": 60.14,
+          "9": 65.93,
+          "10": 67.41,
+          "11": 75.23,
+          "12": 90.89,
+          "13": 90.89,
+          "14": 90.89,
+          "15": 90.89,
+          "16": 90.89,
+          "17": 90.89,
+          "18": 90.89,
+          "19": 90.89,
+          "20": 90.89,
+          "21": 93.85,
+          "22": 93.85,
+          "23": 93.85,
+          "24": 93.85
         },
         "overall_24h": {
-          "conformal_coverage": 92.9,
-          "conformal_mean_width": 123.5,
-          "heuristic_coverage": 71.8,
-          "heuristic_mean_width": 98.0
+          "conformal_coverage": 94.6,
+          "conformal_mean_width": 138.6,
+          "heuristic_coverage": 71.2,
+          "heuristic_mean_width": 99.3
         },
         "lead_time_breakdown": {
           "lead_1h": {
             "lead_hours": 1,
             "conformal_coverage": 100.0,
-            "conformal_mean_width": 47.6,
-            "conformal_margin_q": 23.92,
+            "conformal_mean_width": 58.2,
+            "conformal_margin_q": 29.07,
             "heuristic_coverage": 100.0,
             "heuristic_mean_width": 51.2
           },
           "lead_6h": {
             "lead_hours": 6,
             "conformal_coverage": 84.6,
-            "conformal_mean_width": 103.3,
-            "conformal_margin_q": 53.24,
-            "heuristic_coverage": 61.5,
-            "heuristic_mean_width": 61.6
+            "conformal_mean_width": 86.1,
+            "conformal_margin_q": 43.53,
+            "heuristic_coverage": 69.2,
+            "heuristic_mean_width": 60.7
           },
           "lead_12h": {
             "lead_hours": 12,
-            "conformal_coverage": 92.3,
-            "conformal_mean_width": 137.8,
-            "conformal_margin_q": 71.98,
+            "conformal_coverage": 100.0,
+            "conformal_mean_width": 173.6,
+            "conformal_margin_q": 90.89,
             "heuristic_coverage": 53.8,
-            "heuristic_mean_width": 91.4
+            "heuristic_mean_width": 91.6
           },
           "lead_24h": {
             "lead_hours": 24,
             "conformal_coverage": 92.3,
-            "conformal_mean_width": 153.8,
-            "conformal_margin_q": 78.86,
-            "heuristic_coverage": 76.9,
+            "conformal_mean_width": 181.2,
+            "conformal_margin_q": 93.85,
+            "heuristic_coverage": 61.5,
             "heuristic_mean_width": 161.8
           }
         }

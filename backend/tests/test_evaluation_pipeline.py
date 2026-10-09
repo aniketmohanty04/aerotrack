@@ -141,3 +141,67 @@ def test_evaluate_location_dataset_excludes_future_provider_forecasts():
     # Verify the test set end time does not exceed cutoff
     test_end = datetime.fromisoformat(summary["test_end"])
     assert test_end <= cutoff
+
+
+def test_changing_future_observations_cannot_change_historical_features_or_targets():
+    """
+    Regression Test: Proves that changing future observations cannot change
+    historical training features or targets when cutoff isolation is enforced.
+    """
+    from backend.ml_model import clean_and_impute_series
+
+    cutoff = datetime.fromisoformat("2026-08-05T00:00")
+    
+    # 96 hours of past data ending at cutoff
+    df_past = make_dummy_timeseries(n_hours=96, start_time="2026-08-01T01:00")
+    # Introduce a missing value in the last historical observation
+    df_past.loc[95, "pm25"] = np.nan
+    df_past.loc[95, "pm2_5"] = np.nan
+    
+    # Future scenario A: Future PM2.5 spikes to 300 µg/m³
+    times_future = [cutoff + timedelta(hours=i) for i in range(1, 25)]
+    df_future_A = pd.DataFrame({
+        "time": times_future,
+        "pm25": [300.0] * 24,
+        "pm2_5": [300.0] * 24,
+        "wind_speed": [0.5] * 24,
+        "temperature": [35.0] * 24,
+        "humidity": [80.0] * 24,
+        "no2": [45.0] * 24,
+        "o3": [80.0] * 24
+    })
+    
+    # Future scenario B: Future PM2.5 drops to 2 µg/m³
+    df_future_B = pd.DataFrame({
+        "time": times_future,
+        "pm25": [2.0] * 24,
+        "pm2_5": [2.0] * 24,
+        "wind_speed": [12.0] * 24,
+        "temperature": [5.0] * 24,
+        "humidity": [20.0] * 24,
+        "no2": [2.0] * 24,
+        "o3": [10.0] * 24
+    })
+    
+    df_combined_A = pd.concat([df_past, df_future_A], ignore_index=True)
+    df_combined_B = pd.concat([df_past, df_future_B], ignore_index=True)
+    
+    # Isolate at historical cutoff and clean within partition
+    past_clean_A = clean_and_impute_series(df_combined_A[df_combined_A["time"] <= cutoff].copy().reset_index(drop=True))
+    past_clean_B = clean_and_impute_series(df_combined_B[df_combined_B["time"] <= cutoff].copy().reset_index(drop=True))
+    
+    # 1. Historical data frames must be 100% bit-for-bit identical regardless of future values
+    pd.testing.assert_frame_equal(past_clean_A, past_clean_B)
+    
+    # 2. Historical engineered features must be 100% identical regardless of future values
+    feat_A = engineer_features(past_clean_A)
+    feat_B = engineer_features(past_clean_B)
+    pd.testing.assert_frame_equal(feat_A, feat_B)
+    
+    # 3. Verify that the missing historical row at index 95 was NOT filled with future values (300 or 2)
+    # It must be forward-filled from past row 94
+    expected_filled_val = df_past.loc[94, "pm25"]
+    assert past_clean_A.loc[95, "pm25"] == pytest.approx(expected_filled_val)
+    assert past_clean_B.loc[95, "pm25"] == pytest.approx(expected_filled_val)
+    assert past_clean_A.loc[95, "pm25"] != 300.0
+    assert past_clean_B.loc[95, "pm25"] != 2.0
