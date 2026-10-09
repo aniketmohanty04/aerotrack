@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import logging
 import re
 import time
@@ -6,6 +7,7 @@ from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+import numpy as np
 
 try:
     from backend.ml_model import (
@@ -337,15 +339,48 @@ async def get_air_quality(lat: float, lon: float):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def clean_trend_numeric(val: Any, round_digits: int = 1) -> Optional[float]:
+    """Helper to sanitize numerical values; drops negatives/NaNs/Infs."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if np.isnan(f) or np.isinf(f) or f < 0:
+            return None
+        return round(f, round_digits) if round_digits > 0 else round(f)
+    except (ValueError, TypeError):
+        return None
+
+
 @app.get("/api/trends/{lat}/{lon}")
 async def get_trends(lat: float, lon: float):
     """
     Fetches 7-day historical and current hourly trends for PM2.5, PM10, and AQI.
+    Explicitly separates historical observations from future forecast hours.
+    Guarantees summary statistics and 24-hour averages include only historical observations.
     Shares a 10-minute cache with /api/air-quality to eliminate redundant API calls.
     """
     lat, lon = validate_coords(lat, lon)
     try:
         data = await get_shared_open_meteo_data(lat, lon)
+
+        utc_offset_seconds = int(data.get("utc_offset_seconds", 0))
+        timezone_str = data.get("timezone", "UTC")
+        current_obj = data.get("current", {})
+        current_time_str = current_obj.get("time")
+
+        # Determine reference current observation cutoff in UTC
+        if current_time_str:
+            try:
+                cdt = datetime.fromisoformat(current_time_str)
+                if cdt.tzinfo is None:
+                    current_utc_dt = (cdt - timedelta(seconds=utc_offset_seconds)).replace(tzinfo=timezone.utc)
+                else:
+                    current_utc_dt = cdt.astimezone(timezone.utc)
+            except Exception:
+                current_utc_dt = datetime.now(timezone.utc)
+        else:
+            current_utc_dt = datetime.now(timezone.utc)
 
         hourly = data.get("hourly", {})
         times = hourly.get("time", [])
@@ -356,51 +391,115 @@ async def get_trends(lat: float, lon: float):
         ozone = hourly.get("ozone", [])
         no2 = hourly.get("nitrogen_dioxide", [])
 
-        trend_points = []
-        valid_pm25 = []
+        # Process, normalize timezone to UTC, and deduplicate records by UTC timestamp
+        points_by_utc: Dict[datetime, dict] = {}
 
         for i in range(len(times)):
             t_str = times[i]
-            p25_val = pm25[i] if i < len(pm25) else None
-            p10_val = pm10[i] if i < len(pm10) else None
-            aqi_val = us_aqi[i] if i < len(us_aqi) else None
-            eaqi_val = european_aqi[i] if i < len(european_aqi) else None
-            o3_val = ozone[i] if i < len(ozone) else None
-            no2_val = no2[i] if i < len(no2) else None
+            if not t_str or not isinstance(t_str, str):
+                continue
 
-            if p25_val is not None:
-                valid_pm25.append(p25_val)
+            try:
+                p_dt = datetime.fromisoformat(t_str)
+                if p_dt.tzinfo is None:
+                    p_utc_dt = (p_dt - timedelta(seconds=utc_offset_seconds)).replace(tzinfo=timezone.utc)
+                else:
+                    p_utc_dt = p_dt.astimezone(timezone.utc)
+            except Exception:
+                continue
 
-            # Format human friendly time e.g. "Oct 08 02:00"
+            p25_val = clean_trend_numeric(pm25[i] if i < len(pm25) else None, 1)
+            p10_val = clean_trend_numeric(pm10[i] if i < len(pm10) else None, 1)
+            aqi_val = clean_trend_numeric(us_aqi[i] if i < len(us_aqi) else None, 0)
+            eaqi_val = clean_trend_numeric(european_aqi[i] if i < len(european_aqi) else None, 0)
+            o3_val = clean_trend_numeric(ozone[i] if i < len(ozone) else None, 1)
+            no2_val = clean_trend_numeric(no2[i] if i < len(no2) else None, 1)
+
+            # Format human friendly label e.g. "Oct 08 02:00"
             display_label = t_str.replace("T", " ")
             if len(t_str) >= 16:
-                month_day = t_str[5:10]  # MM-DD
-                hour_min = t_str[11:16]  # HH:MM
+                month_day = t_str[5:10]
+                hour_min = t_str[11:16]
                 display_label = f"{month_day} {hour_min}"
 
-            trend_points.append({
+            is_forecast = bool(p_utc_dt > current_utc_dt)
+            record = {
+                "utc_dt": p_utc_dt,
                 "time": t_str,
+                "utc_time": p_utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "label": display_label,
-                "pm2_5": round(p25_val, 1) if p25_val is not None else None,
-                "pm10": round(p10_val, 1) if p10_val is not None else None,
-                "us_aqi": round(aqi_val) if aqi_val is not None else None,
-                "european_aqi": round(eaqi_val) if eaqi_val is not None else None,
-                "ozone": round(o3_val, 1) if o3_val is not None else None,
-                "nitrogen_dioxide": round(no2_val, 1) if no2_val is not None else None,
-            })
+                "is_forecast": is_forecast,
+                "point_type": "forecast" if is_forecast else "observation",
+                "pm2_5": p25_val,
+                "pm10": p10_val,
+                "us_aqi": int(aqi_val) if aqi_val is not None else None,
+                "european_aqi": int(eaqi_val) if eaqi_val is not None else None,
+                "ozone": o3_val,
+                "nitrogen_dioxide": no2_val,
+            }
 
-        avg_pm25 = round(sum(valid_pm25) / len(valid_pm25), 1) if valid_pm25 else 0.0
-        min_pm25 = min(valid_pm25) if valid_pm25 else 0.0
-        max_pm25 = max(valid_pm25) if valid_pm25 else 0.0
+            # Handle duplicate timestamps (prefer records with valid PM2.5 readings)
+            if p_utc_dt in points_by_utc:
+                if points_by_utc[p_utc_dt]["pm2_5"] is None and p25_val is not None:
+                    points_by_utc[p_utc_dt] = record
+            else:
+                points_by_utc[p_utc_dt] = record
+
+        # Sort chronologically by UTC datetime to handle out-of-order upstream records
+        sorted_records = sorted(points_by_utc.values(), key=lambda r: r["utc_dt"])
+
+        # Separate historical observations from future forecast values
+        historical_obs = [r for r in sorted_records if not r["is_forecast"]]
+        forecast_obs = [r for r in sorted_records if r["is_forecast"]]
+
+        valid_hist_pm25 = [r["pm2_5"] for r in historical_obs if r["pm2_5"] is not None]
+
+        avg_pm25 = round(sum(valid_hist_pm25) / len(valid_hist_pm25), 1) if valid_hist_pm25 else 0.0
+        min_pm25 = min(valid_hist_pm25) if valid_hist_pm25 else 0.0
+        max_pm25 = max(valid_hist_pm25) if valid_hist_pm25 else 0.0
+
+        # Exact 24-hour historical window ending at current observation time: [current_utc_dt - 24h, current_utc_dt]
+        cutoff_24h_utc = current_utc_dt - timedelta(hours=24)
+        last_24h_obs = [
+            r for r in historical_obs
+            if r["utc_dt"] >= cutoff_24h_utc and r["pm2_5"] is not None
+        ]
+        last_24h_pm25 = [r["pm2_5"] for r in last_24h_obs]
+        last_24h_avg_pm25 = round(sum(last_24h_pm25) / len(last_24h_pm25), 1) if last_24h_pm25 else avg_pm25
+
+        # Format output points (strip internal datetime objects)
+        trend_points = []
+        for r in sorted_records:
+            trend_points.append({
+                "time": r["time"],
+                "utc_time": r["utc_time"],
+                "label": r["label"],
+                "pm2_5": r["pm2_5"],
+                "pm10": r["pm10"],
+                "us_aqi": r["us_aqi"],
+                "european_aqi": r["european_aqi"],
+                "ozone": r["ozone"],
+                "nitrogen_dioxide": r["nitrogen_dioxide"],
+                "is_forecast": r["is_forecast"],
+                "point_type": r["point_type"],
+            })
 
         return {
             "latitude": lat,
             "longitude": lon,
+            "timezone": timezone_str,
+            "utc_offset_seconds": utc_offset_seconds,
+            "current_time": current_time_str,
+            "current_time_utc": current_utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "total_points": len(trend_points),
             "stats": {
                 "avg_pm25": avg_pm25,
                 "min_pm25": min_pm25,
-                "max_pm25": max_pm25
+                "max_pm25": max_pm25,
+                "last_24h_avg_pm25": last_24h_avg_pm25,
+                "historical_points_count": len(valid_hist_pm25),
+                "forecast_points_count": len(forecast_obs),
+                "last_24h_points_count": len(last_24h_pm25)
             },
             "trends": trend_points
         }

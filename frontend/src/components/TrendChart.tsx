@@ -58,6 +58,48 @@ const twoLineLabel = (title: string, subtitle: string, color: string) => ({ view
   );
 };
 
+// Pure helper function: compute 24h historical average PM2.5 strictly from observations
+export function computeHistorical24hAvg(
+  trends: TrendData['trends'],
+  backendLast24h?: number,
+  fallbackAvg: number = 0
+): number {
+  if (typeof backendLast24h === 'number') {
+    return backendLast24h;
+  }
+  const historicalObs = trends.filter((p) => !p.is_forecast);
+  const last24hHistoricalObs = historicalObs.slice(-24);
+  const last24hPm25 = last24hHistoricalObs
+    .map((p) => p.pm2_5)
+    .filter((v): v is number => typeof v === 'number' && !isNaN(v));
+
+  return last24hPm25.length
+    ? last24hPm25.reduce((a, b) => a + b, 0) / last24hPm25.length
+    : fallbackAvg;
+}
+
+// Pure helper function: prepare composed chart data separating observations and forecasts
+export function prepareTrendChartData(
+  trends: TrendData['trends'],
+  metric: 'pm2_5' | 'us_aqi' = 'pm2_5'
+) {
+  const lastObsIndex = trends.reduce((lastIdx, pt, idx) => (!pt.is_forecast ? idx : lastIdx), -1);
+
+  return trends.map((pt, idx) => {
+    const val = metric === 'pm2_5' ? pt.pm2_5 : pt.us_aqi;
+    const isForecast = !!pt.is_forecast;
+
+    return {
+      ...pt,
+      // Observed value only on historical observation points
+      observed_val: !isForecast ? val : null,
+      // Forecast value on future points, seamlessly bridged from the final observation
+      forecast_val: isForecast || idx === lastObsIndex ? val : null,
+      metric_val: val,
+    };
+  });
+}
+
 export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
   const [metric, setMetric] = useState<'pm2_5' | 'us_aqi'>('pm2_5');
 
@@ -91,14 +133,8 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
     yTicks.push(val);
   }
 
-  // Calculate Last 24-Hour Average PM2.5 for plain-English summary banner
-  const last24hPoints = trends.slice(-24);
-  const last24hPm25 = last24hPoints
-    .map((p) => p.pm2_5)
-    .filter((v): v is number => typeof v === 'number');
-  const last24hAvg = last24hPm25.length
-    ? last24hPm25.reduce((a, b) => a + b, 0) / last24hPm25.length
-    : stats.avg_pm25;
+  // Calculate Last 24-Hour Average PM2.5 strictly from historical observations
+  const last24hAvg = computeHistorical24hAvg(trends, stats.last_24h_avg_pm25, stats.avg_pm25);
 
   let trendSummaryText = 'Air quality has been good this week.';
   let trendSummaryStyle = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300';
@@ -128,23 +164,42 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
   // Fixed 24-hour interval for 7-day data
   const dayInterval = Math.max(1, Math.round(trends.length / 7) - 1);
 
+  // Split into observed vs forecast lines for visual and semantic distinction
+  const lastObsIndex = trends.reduce((lastIdx, pt, idx) => (!pt.is_forecast ? idx : lastIdx), -1);
+  const lastObsPoint = lastObsIndex >= 0 ? trends[lastObsIndex] : null;
+
+  const chartData = prepareTrendChartData(trends, metric);
+
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const point = payload[0].payload;
+      const isForecast = !!point.is_forecast;
+
       return (
-        <div className="bg-slate-900/95 border border-slate-700 p-3 rounded-xl shadow-2xl backdrop-blur-md text-xs space-y-1">
-          <p className="font-semibold text-slate-300">{point.time.replace('T', ' ')}</p>
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400"></span>
-            <span className="text-slate-400">PM2.5:</span>
-            <span className="font-bold text-white flex items-center gap-1">
-              {point.pm2_5} <Ugm3Unit iconSize="w-2.5 h-2.5" />
+        <div className="bg-slate-900/95 border border-slate-700 p-3 rounded-xl shadow-2xl backdrop-blur-md text-xs space-y-1.5 min-w-[170px]">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1">
+            <span className="font-semibold text-slate-300">{point.label || point.time.replace('T', ' ')}</span>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+              isForecast
+                ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
+                : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+            }`}>
+              {isForecast ? 'Forecast' : 'Observed'}
             </span>
           </div>
+
           <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+            <span className={`w-2.5 h-2.5 rounded-full ${isForecast ? 'bg-purple-400' : 'bg-cyan-400'}`}></span>
+            <span className="text-slate-400">PM2.5:</span>
+            <span className="font-bold text-white flex items-center gap-1">
+              {point.pm2_5 != null ? point.pm2_5 : 'No data'} <Ugm3Unit iconSize="w-2.5 h-2.5" />
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className={`w-2.5 h-2.5 rounded-full ${isForecast ? 'bg-purple-400' : 'bg-amber-400'}`}></span>
             <span className="text-slate-400">US AQI:</span>
-            <span className="font-bold text-white">{point.us_aqi ?? 'N/A'}</span>
+            <span className="font-bold text-white">{point.us_aqi != null ? point.us_aqi : 'N/A'}</span>
           </div>
         </div>
       );
@@ -173,7 +228,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
           <span>{trendSummaryText}</span>
         </div>
         <span className="text-[11px] font-mono opacity-80 whitespace-nowrap">
-          24h avg: {last24hAvg.toFixed(1)} µg/m³
+          Historical 24h avg: {last24hAvg.toFixed(1)} µg/m³
         </span>
       </div>
 
@@ -185,7 +240,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
           </div>
           <p className="text-xs text-slate-400 flex items-center gap-1.5">
             <Calendar className="w-3.5 h-3.5" />
-            Hourly historical trajectory from Open-Meteo
+            Hourly observations & upcoming forecast from Open-Meteo
           </p>
         </div>
 
@@ -227,32 +282,35 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
         </div>
       </div>
 
-      {/* Mini Stats Bar */}
+      {/* Mini Stats Bar - Strictly Historical Statistics */}
       <div className="grid grid-cols-3 gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 text-center">
         <div>
-          <span className="text-[11px] text-slate-400 block font-medium">7-Day Average</span>
+          <span className="text-[11px] text-slate-400 block font-medium">7-Day Historical Avg</span>
           <span className="text-sm sm:text-base font-bold text-cyan-400 flex items-center justify-center gap-1">
             {stats.avg_pm25} <Ugm3Unit iconSize="w-2.5 h-2.5" />
           </span>
+          <span className="text-[10px] text-slate-400 block mt-0.5">Observed only</span>
         </div>
         <div>
-          <span className="text-[11px] text-slate-400 block font-medium">Minimum</span>
+          <span className="text-[11px] text-slate-400 block font-medium">Historical Minimum</span>
           <span className="text-sm sm:text-base font-bold text-emerald-400 flex items-center justify-center gap-1">
             {stats.min_pm25} <Ugm3Unit iconSize="w-2.5 h-2.5" />
           </span>
+          <span className="text-[10px] text-slate-400 block mt-0.5">Observed low</span>
         </div>
         <div>
-          <span className="text-[11px] text-slate-400 block font-medium">Maximum Spike</span>
+          <span className="text-[11px] text-slate-400 block font-medium">Historical Maximum</span>
           <span className="text-sm sm:text-base font-bold text-rose-400 flex items-center justify-center gap-1">
             {stats.max_pm25} <Ugm3Unit iconSize="w-2.5 h-2.5" />
           </span>
+          <span className="text-[10px] text-slate-400 block mt-0.5">Observed spike</span>
         </div>
       </div>
 
       {/* Recharts Composed Chart with Gradient Fill & Round Ticks */}
       <div className="h-[280px] w-full pt-2">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={trends} margin={{ top: 20, right: 130, left: 10, bottom: 10 }}>
+          <ComposedChart data={chartData} margin={{ top: 20, right: 130, left: 10, bottom: 10 }}>
             <defs>
               <linearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.1} />
@@ -276,10 +334,10 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
             />
             <Tooltip content={<CustomTooltip />} />
 
-            {/* Gradient Area Fill under the Line (reduced prominence) */}
+            {/* Gradient Area Fill under the Observed Line */}
             <Area
               type="monotone"
-              dataKey={metric}
+              dataKey="observed_val"
               fill="url(#trendGradient)"
               stroke="none"
             />
@@ -302,25 +360,49 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
               </>
             )}
 
-            {/* Main historical data line - Dotted context line */}
+            {/* Observation cutoff reference line at "Now" */}
+            {lastObsPoint && (
+              <ReferenceLine
+                x={lastObsPoint.time}
+                stroke="#94a3b8"
+                strokeWidth={1.5}
+                strokeDasharray="2 2"
+                label={twoLineLabel('Now', 'Observation Cutoff', '#94a3b8')}
+              />
+            )}
+
+            {/* Observed historical line (Solid) */}
             <Line
               type="monotone"
-              dataKey={metric}
+              dataKey="observed_val"
+              name={metric === 'pm2_5' ? 'Observed PM2.5' : 'Observed AQI'}
               stroke={dataLineColor}
-              strokeWidth={2}
-              strokeDasharray="3 3"
+              strokeWidth={2.5}
               dot={false}
               activeDot={{ r: 5, fill: dataLineColor, stroke: '#ffffff', strokeWidth: 2 }}
+            />
+
+            {/* Future forecast projection line (Dashed Purple) */}
+            <Line
+              type="monotone"
+              dataKey="forecast_val"
+              name={metric === 'pm2_5' ? 'Forecast PM2.5' : 'Forecast AQI'}
+              stroke="#c084fc"
+              strokeWidth={2}
+              strokeDasharray="4 4"
+              dot={false}
+              activeDot={{ r: 5, fill: '#c084fc', stroke: '#ffffff', strokeWidth: 2 }}
             />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Legend below the chart */}
-      <div style={{ display: 'flex', gap: 24, fontSize: 11, color: '#94a3b8', marginTop: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-        <span><span style={{ color: '#10b981', fontWeight: 600 }}>—</span> Safe Limit: 15 µg/m³ (WHO Guideline)</span>
-        <span><span style={{ color: '#f59e0b', fontWeight: 600 }}>—</span> Caution Limit: 35 µg/m³ (Moderate Threshold)</span>
-        <span><span style={{ color: '#22d3ee', fontWeight: 600 }}>···</span> {metric === 'pm2_5' ? 'Historical PM2.5' : 'Historical AQI'}</span>
+      {/* Legend below the chart distinguishing observed vs forecast */}
+      <div style={{ display: 'flex', gap: 20, fontSize: 11, color: '#94a3b8', marginTop: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+        <span><span style={{ color: dataLineColor, fontWeight: 700 }}>—</span> {metric === 'pm2_5' ? 'Observed PM2.5 (Historical)' : 'Observed AQI (Historical)'}</span>
+        <span><span style={{ color: '#c084fc', fontWeight: 700 }}>┅</span> Forecast (Upcoming Projection)</span>
+        <span><span style={{ color: '#10b981', fontWeight: 600 }}>—</span> Safe Limit: 15 µg/m³</span>
+        <span><span style={{ color: '#f59e0b', fontWeight: 600 }}>—</span> Caution Limit: 35 µg/m³</span>
       </div>
     </div>
   );

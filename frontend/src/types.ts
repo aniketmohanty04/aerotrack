@@ -33,6 +33,7 @@ export interface AirQualityData {
 
 export interface TrendPoint {
   time: string;
+  utc_time?: string;
   label: string;
   pm2_5: number | null;
   pm10: number | null;
@@ -40,16 +41,25 @@ export interface TrendPoint {
   european_aqi: number | null;
   ozone: number | null;
   nitrogen_dioxide: number | null;
+  is_forecast?: boolean;
+  point_type?: 'observation' | 'forecast';
 }
 
 export interface TrendData {
   latitude: number;
   longitude: number;
+  timezone?: string;
+  utc_offset_seconds?: number;
+  current_time?: string;
+  current_time_utc?: string;
   total_points: number;
   stats: {
     avg_pm25: number;
     min_pm25: number;
     max_pm25: number;
+    last_24h_avg_pm25?: number;
+    historical_points_count?: number;
+    forecast_points_count?: number;
   };
   trends: TrendPoint[];
 }
