@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import {
   AirQualityData,
@@ -44,6 +44,10 @@ export const App: React.FC = () => {
   const [lon, setLon] = useState<number>(77.2090);
   const [locationName, setLocationName] = useState<string>('New Delhi, India');
 
+  // Track active coordinates and in-flight request sequence to prevent race conditions
+  const coordsRef = useRef({ lat: 28.6139, lon: 77.2090 });
+  const reqIdRef = useRef(0);
+
   // Data states
   const [airQuality, setAirQuality] = useState<AirQualityData | null>(null);
   const [trends, setTrends] = useState<TrendData | null>(null);
@@ -59,6 +63,8 @@ export const App: React.FC = () => {
 
   // Fetch all 3 endpoints concurrently with independent state updates for instant rendering
   const fetchAllData = useCallback(async (targetLat: number, targetLon: number) => {
+    const currentReqId = ++reqIdRef.current;
+
     // Immediately clear previous location data so old AQI never hovers or flashes on the new location
     setAirQuality(null);
     setTrends(null);
@@ -73,10 +79,12 @@ export const App: React.FC = () => {
     const pAirQuality = axios
       .get<AirQualityData>(`${API_BASE}/api/air-quality/${targetLat}/${targetLon}`)
       .then((res) => {
+        if (reqIdRef.current !== currentReqId) return;
         setAirQuality(res.data);
         setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       })
       .catch((err) => {
+        if (reqIdRef.current !== currentReqId) return;
         setAirQuality(null);
         if (err.response?.status === 400) {
           setError("Invalid location. Please click somewhere within the valid map range.");
@@ -86,19 +94,34 @@ export const App: React.FC = () => {
           setError("Failed to fetch air quality data. Check your connection.");
         }
       })
-      .finally(() => setIsAirQualityLoading(false));
+      .finally(() => {
+        if (reqIdRef.current === currentReqId) {
+          setIsAirQualityLoading(false);
+        }
+      });
 
     // 2. 7-Day Historical Trends (~200-350ms)
     const pTrends = axios
       .get<TrendData>(`${API_BASE}/api/trends/${targetLat}/${targetLon}`)
-      .then((res) => setTrends(res.data))
-      .catch(() => setTrends(null))
-      .finally(() => setIsTrendsLoading(false));
+      .then((res) => {
+        if (reqIdRef.current !== currentReqId) return;
+        setTrends(res.data);
+      })
+      .catch(() => {
+        if (reqIdRef.current !== currentReqId) return;
+        setTrends(null);
+      })
+      .finally(() => {
+        if (reqIdRef.current === currentReqId) {
+          setIsTrendsLoading(false);
+        }
+      });
 
     // 3. 24-Hour ML PM2.5 Forecast with Split Conformal Intervals (~1-3s)
     const pForecast = axios
       .get<ForecastData>(`${API_BASE}/api/predict/${targetLat}/${targetLon}`)
       .then((res) => {
+        if (reqIdRef.current !== currentReqId) return;
         const fData = res.data;
         if (fData.status === 'error') {
           setForecast(null);
@@ -109,6 +132,7 @@ export const App: React.FC = () => {
         }
       })
       .catch((err) => {
+        if (reqIdRef.current !== currentReqId) return;
         const errResp = err.response?.data;
         const errMsg =
           errResp?.message ||
@@ -118,30 +142,31 @@ export const App: React.FC = () => {
         setForecast(null);
         setForecastError(errMsg);
       })
-      .finally(() => setIsForecastLoading(false));
+      .finally(() => {
+        if (reqIdRef.current === currentReqId) {
+          setIsForecastLoading(false);
+        }
+      });
 
     await Promise.allSettled([pAirQuality, pTrends, pForecast]);
   }, []);
 
   // Handle location update with optional displayName
   const handleSelect = (newLat: number, newLon: number, displayName?: string) => {
-    const isNewCoords = Math.abs(newLat - lat) > 1e-4 || Math.abs(newLon - lon) > 1e-4;
-    if (isNewCoords) {
-      // Immediately reset previous readings so new click always calculates and shows freshly
-      setAirQuality(null);
-      setTrends(null);
-      setForecast(null);
-      setIsAirQualityLoading(true);
-      setIsTrendsLoading(true);
-      setIsForecastLoading(true);
-      setLat(newLat);
-      setLon(newLon);
-    }
+    coordsRef.current = { lat: newLat, lon: newLon };
+    setLat(newLat);
+    setLon(newLon);
     if (displayName) {
       setLocationName(displayName);
-    } else if (isNewCoords) {
+    } else {
       setLocationName(`${newLat.toFixed(3)}°, ${newLon.toFixed(3)}°`);
     }
+    // Always trigger fresh calculation for newly selected coordinates
+    fetchAllData(newLat, newLon);
+  };
+
+  const handleUpdateLocationName = (name: string) => {
+    setLocationName(name);
   };
 
   const handleSelectLocation = handleSelect;
@@ -171,10 +196,10 @@ export const App: React.FC = () => {
     }
   };
 
-  // Trigger data fetches on coordinates change
+  // Trigger initial fetch on component mount
   useEffect(() => {
-    fetchAllData(lat, lon);
-  }, [lat, lon, fetchAllData]);
+    fetchAllData(28.6139, 77.2090);
+  }, [fetchAllData]);
 
   const isAnyLoading = isAirQualityLoading || isTrendsLoading || isForecastLoading;
 
@@ -296,6 +321,7 @@ export const App: React.FC = () => {
               lon={lon}
               locationName={locationName}
               onSelect={handleSelectLocation}
+              onLocationNameResolved={handleUpdateLocationName}
               aqiInfo={airQuality?.aqi_info}
               aqiValue={airQuality?.us_aqi}
               isLoading={isAirQualityLoading}

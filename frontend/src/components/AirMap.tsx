@@ -10,6 +10,7 @@ interface AirMapProps {
   lon: number;
   locationName?: string;
   onSelect: (lat: number, lon: number, displayName?: string) => void;
+  onLocationNameResolved?: (name: string) => void;
   aqiInfo?: AQIInfo;
   aqiValue?: number | null;
   isLoading?: boolean;
@@ -36,24 +37,32 @@ const createCustomMarker = (color: string = '#06b6d4') => {
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // Map click listener hook
-const MapClickHandler: React.FC<{ onSelect: (lat: number, lon: number, displayName?: string) => void }> = ({ onSelect }) => {
+const MapClickHandler: React.FC<{
+  onSelect: (lat: number, lon: number, displayName?: string) => void;
+  onLocationNameResolved?: (name: string) => void;
+}> = ({ onSelect, onLocationNameResolved }) => {
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const onNameRef = useRef(onLocationNameResolved);
+  onNameRef.current = onLocationNameResolved;
+
   useMapEvents({
     async click(e) {
       const wrapped = e.latlng.wrap();
-      const lat = Math.max(-90, Math.min(90, wrapped.lat));
+      const lat = Math.max(-89.9, Math.min(89.9, wrapped.lat));
       const lon = ((wrapped.lng + 180) % 360 + 360) % 360 - 180;
 
-      // 1. Immediately update coordinates so map pan, marker, and dashboard load instantly
-      const fallbackName = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
-      onSelect(lat, lon, fallbackName);
+      // 1. Immediately trigger location selection and fresh data calculation
+      const fallbackName = `${lat.toFixed(3)}°, ${lon.toFixed(3)}°`;
+      onSelectRef.current(lat, lon, fallbackName);
 
-      // 2. Fetch reverse-geocoded place name asynchronously in the background
+      // 2. Fetch reverse-geocoded place name asynchronously in the background without re-triggering data fetch
       try {
         const res = await axios.get(`${API_BASE}/api/reverse-geocode/${lat}/${lon}`);
         const { city, region, country } = res.data || {};
         const parts = [city, region, country].filter(Boolean);
-        if (parts.length > 0) {
-          onSelect(lat, lon, parts.join(", "));
+        if (parts.length > 0 && onNameRef.current) {
+          onNameRef.current(parts.join(", "));
         }
       } catch (err) {
         /* keep existing coordinate fallback */
@@ -77,6 +86,7 @@ export const AirMap: React.FC<AirMapProps> = ({
   lon,
   locationName,
   onSelect,
+  onLocationNameResolved,
   aqiInfo,
   aqiValue,
   isLoading = false,
@@ -110,7 +120,7 @@ export const AirMap: React.FC<AirMapProps> = ({
           attribution='&copy; OpenStreetMap contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <MapClickHandler onSelect={onSelect} />
+        <MapClickHandler onSelect={onSelect} onLocationNameResolved={onLocationNameResolved} />
         <MapViewController lat={lat} lon={lon} />
         <Marker ref={markerRef} position={[lat, lon]} icon={customIcon}>
           <Popup>
