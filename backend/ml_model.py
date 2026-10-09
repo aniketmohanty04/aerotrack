@@ -1,5 +1,6 @@
 import os
 import time
+import math
 import asyncio
 import httpx
 import numpy as np
@@ -410,10 +411,10 @@ def predict_autoregressive_rollout(
         hour = next_time.hour
         day_of_week = next_time.weekday()
 
-        hour_sin = np.sin(2.0 * np.pi * hour / 24.0)
-        hour_cos = np.cos(2.0 * np.pi * hour / 24.0)
-        dow_sin = np.sin(2.0 * np.pi * day_of_week / 7.0)
-        dow_cos = np.cos(2.0 * np.pi * day_of_week / 7.0)
+        hour_sin = math.sin(2.0 * math.pi * hour / 24.0)
+        hour_cos = math.cos(2.0 * math.pi * hour / 24.0)
+        dow_sin = math.sin(2.0 * math.pi * day_of_week / 7.0)
+        dow_cos = math.cos(2.0 * math.pi * day_of_week / 7.0)
 
         pm25_lag1 = pm_history[-1]
         pm25_lag2 = pm_history[-2] if len(pm_history) >= 2 else pm25_lag1
@@ -429,9 +430,13 @@ def predict_autoregressive_rollout(
 
         recent_6 = pm_history[-6:]
         recent_24 = pm_history[-24:]
-        rolling_mean_6 = float(np.mean(recent_6))
-        rolling_mean_24 = float(np.mean(recent_24))
-        rolling_std_24 = float(np.std(recent_24)) if len(recent_24) > 1 else 0.0
+        rolling_mean_6 = float(sum(recent_6) / len(recent_6))
+        rolling_mean_24 = float(sum(recent_24) / len(recent_24))
+        if len(recent_24) > 1:
+            var_24 = sum((x - rolling_mean_24) ** 2 for x in recent_24) / len(recent_24)
+            rolling_std_24 = float(math.sqrt(var_24))
+        else:
+            rolling_std_24 = 0.0
 
         feature_map = {
             "hour_sin": hour_sin,
@@ -507,7 +512,8 @@ def calibrate_conformal_quantiles(
     target_col: str = "pm25",
     horizon: int = 24,
     alpha: float = 0.10,
-    stride_hours: int = 6
+    stride_hours: int = 12,
+    max_origins: Optional[int] = 30
 ) -> Tuple[Dict[int, float], int]:
     """
     Calibrate horizon-specific split conformal quantiles on an independent holdout history partition.
@@ -518,13 +524,18 @@ def calibrate_conformal_quantiles(
     - calib_start_idx, calib_end_idx: Chronological slice boundaries for calibration.
     - horizon: Forecast steps (e.g. 24 hours).
     - alpha: Miscoverage level (e.g. 0.10 for 90% coverage).
-    - stride_hours: Spacing between calibration evaluation origins.
+    - stride_hours: Spacing between calibration evaluation origins (default: 12 hours).
+    - max_origins: Optional upper bound on evaluation origins to ensure fast inference on cloud vCPU.
     
     Returns:
     - Dictionary mapping step h -> calibrated conformal radius q_{1-alpha}^{(h)}.
     - Number of valid calibration windows evaluated.
     """
     origins = list(range(calib_start_idx, calib_end_idx - horizon, stride_hours))
+    if max_origins is not None and len(origins) > max_origins:
+        step_sz = len(origins) / max_origins
+        origins = [origins[int(i * step_sz)] for i in range(max_origins)]
+
     if len(origins) < 5:
         logger.warning(f"Insufficient calibration origins ({len(origins)}); falling back to heuristic.")
         return {}, 0
@@ -717,7 +728,8 @@ async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = Fal
                     target_col=target_col,
                     horizon=24,
                     alpha=0.10,
-                    stride_hours=6
+                    stride_hours=12,
+                    max_origins=30
                 )
                 if conformal_quantiles:
                     calib_record = {

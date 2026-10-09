@@ -244,12 +244,30 @@ async def search_location(query: str = Query(..., min_length=2)):
 # Key: (round(lat, 4), round(lon, 4)), Value: { 'timestamp': float, 'data': dict }
 SHARED_AIR_CACHE: Dict[tuple, Dict[str, Any]] = {}
 CACHE_TTL_AIR_SECONDS = 600  # 10 minutes
+IN_FLIGHT_AIR_REQUESTS: Dict[tuple, asyncio.Task] = {}
+
+
+async def _fetch_open_meteo_raw(lat: float, lon: float) -> Dict[str, Any]:
+    url = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "european_aqi,us_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone",
+        "hourly": "pm2_5,pm10,us_aqi,european_aqi,ozone,nitrogen_dioxide",
+        "past_days": 7,
+        "forecast_days": 1,
+        "timezone": "auto"
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
 
 
 async def get_shared_open_meteo_data(lat: float, lon: float) -> Dict[str, Any]:
     """
     Fetch both current air quality and 7-day hourly trends from Open-Meteo in a single call,
-    caching with a 10-minute TTL so /api/air-quality and /api/trends share the same data.
+    caching with a 10-minute TTL and deduplicating concurrent in-flight requests.
     """
     lat, lon = normalize_coordinates(lat, lon)
     cache_key = (lat, lon)
@@ -261,28 +279,23 @@ async def get_shared_open_meteo_data(lat: float, lon: float) -> Dict[str, Any]:
             logger.info(f"Shared Open-Meteo cache HIT for ({lat}, {lon})")
             return cached["data"]
 
+    # Await existing in-flight task if air-quality and trends fired concurrently
+    if cache_key in IN_FLIGHT_AIR_REQUESTS:
+        logger.info(f"Awaiting in-flight Open-Meteo request for ({lat}, {lon})")
+        return await IN_FLIGHT_AIR_REQUESTS[cache_key]
+
     logger.info(f"Shared Open-Meteo cache MISS for ({lat}, {lon}) - fetching from Open-Meteo")
-    url = "https://air-quality-api.open-meteo.com/v1/air-quality"
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "current": "european_aqi,us_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone",
-        "hourly": "pm2_5,pm10,us_aqi,european_aqi,ozone,nitrogen_dioxide",
-        "past_days": 7,
-        "forecast_days": 1,
-        "timezone": "auto"
-    }
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-
-    SHARED_AIR_CACHE[cache_key] = {
-        "timestamp": now,
-        "data": data
-    }
-    return data
+    task = asyncio.create_task(_fetch_open_meteo_raw(lat, lon))
+    IN_FLIGHT_AIR_REQUESTS[cache_key] = task
+    try:
+        data = await task
+        SHARED_AIR_CACHE[cache_key] = {
+            "timestamp": time.time(),
+            "data": data
+        }
+        return data
+    finally:
+        IN_FLIGHT_AIR_REQUESTS.pop(cache_key, None)
 
 
 @app.get("/api/air-quality/{lat}/{lon}")
@@ -583,6 +596,8 @@ async def get_prediction(
         )
 
 
+REVERSE_GEOCODE_CACHE: Dict[Tuple[float, float], Tuple[float, dict]] = {}
+CACHE_TTL_GEOCODE_SECONDS = 86400  # 24 hours
 nominatim_lock: Optional[asyncio.Lock] = None
 last_nominatim_call = 0.0
 
@@ -595,6 +610,13 @@ def get_nominatim_lock() -> asyncio.Lock:
 
 
 async def reverse_geocode(lat: float, lon: float) -> dict:
+    cache_key = (round(lat, 3), round(lon, 3))
+    now = time.time()
+    if cache_key in REVERSE_GEOCODE_CACHE:
+        ts, cached_val = REVERSE_GEOCODE_CACHE[cache_key]
+        if now - ts < CACHE_TTL_GEOCODE_SECONDS:
+            return cached_val
+
     url = "https://nominatim.openstreetmap.org/reverse"
     headers = {
         "User-Agent": "AeroTrack/1.0 (air quality demo project)",
@@ -611,22 +633,30 @@ async def reverse_geocode(lat: float, lon: float) -> dict:
     }
     
     global last_nominatim_call
-    async with get_nominatim_lock():
-        now = time.time()
-        elapsed = now - last_nominatim_call
-        if elapsed < 1.0:
-            await asyncio.sleep(1.0 - elapsed)
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get(url, params=params, headers=headers)
+    data = None
+    try:
+        async with get_nominatim_lock():
+            now_call = time.time()
+            elapsed = now_call - last_nominatim_call
+            if elapsed < 1.0:
+                await asyncio.sleep(1.0 - elapsed)
+            try:
+                # 3.5s timeout prevents Render server hanging when Nominatim throttles cloud IPs
+                async with httpx.AsyncClient(timeout=3.5) as client:
+                    r = await client.get(url, params=params, headers=headers)
+                    last_nominatim_call = time.time()
+                    if r.status_code == 200:
+                        data = r.json()
+            except Exception as e:
                 last_nominatim_call = time.time()
-                if r.status_code != 200:
-                    return {"city": None, "region": None, "country": None}
-                data = r.json()
-        except Exception as e:
-            last_nominatim_call = time.time()
-            logger.error(f"Reverse geocode failed: {e}")
-            return {"city": None, "region": None, "country": None}
+                logger.warning(f"Reverse geocode upstream failed or timed out: {e}")
+    except Exception as e:
+        logger.warning(f"Nominatim lock error: {e}")
+
+    if not data:
+        fallback = {"city": None, "region": None, "country": None}
+        REVERSE_GEOCODE_CACHE[cache_key] = (now, fallback)
+        return fallback
 
     address = data.get("address", {})
     namedetails = data.get("namedetails", {})
@@ -669,7 +699,9 @@ async def reverse_geocode(lat: float, lon: float) -> dict:
     if not country and address.get("country_code") == "cn":
         country = "China"
 
-    return {"city": city, "region": region, "country": country}
+    res = {"city": city, "region": region, "country": country}
+    REVERSE_GEOCODE_CACHE[cache_key] = (now, res)
+    return res
 
 
 @app.get("/api/reverse-geocode/{lat}/{lon}")
