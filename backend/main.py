@@ -60,13 +60,14 @@ def read_root():
     }
 
 
-@app.api_route("/api/info", methods=["GET", "HEAD"])
+@app.get("/api/info")
+@app.head("/api/info", include_in_schema=False)
 def read_api_info():
     return {
         "name": "AeroTrack Air Quality & Forecasting API",
         "status": "online",
         "docs": "/docs",
-        "frontend": "http://localhost:5173",
+        "frontend": "https://aerotrack-three.vercel.app/",
         "endpoints": {
             "health": "/api/health",
             "air_quality": "/api/air-quality/{lat}/{lon}",
@@ -78,7 +79,8 @@ def read_api_info():
     }
 
 
-@app.api_route("/api/health", methods=["GET", "HEAD"])
+@app.get("/api/health")
+@app.head("/api/health", include_in_schema=False)
 def health_check():
     return {"status": "ok", "service": "aerotrack-backend"}
 
@@ -193,11 +195,6 @@ def get_rating(pollutant: str, value: Optional[float]) -> str:
     return "hazardous"
 
 get_pollutant_rating = get_rating
-
-
-@app.get("/api/health")
-async def health_check():
-    return {"status": "ok", "service": "air-quality-api"}
 
 
 @app.get("/api/location/search")
