@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
@@ -42,17 +42,21 @@ const MapClickHandler: React.FC<{ onSelect: (lat: number, lon: number, displayNa
       const lat = Math.max(-90, Math.min(90, wrapped.lat));
       const lon = ((wrapped.lng + 180) % 360 + 360) % 360 - 180;
 
-      let displayName = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      // 1. Immediately update coordinates so map pan, marker, and dashboard load instantly
+      const fallbackName = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+      onSelect(lat, lon, fallbackName);
+
+      // 2. Fetch reverse-geocoded place name asynchronously in the background
       try {
         const res = await axios.get(`${API_BASE}/api/reverse-geocode/${lat}/${lon}`);
         const { city, region, country } = res.data || {};
         const parts = [city, region, country].filter(Boolean);
-        if (parts.length > 0) displayName = parts.join(", ");
+        if (parts.length > 0) {
+          onSelect(lat, lon, parts.join(", "));
+        }
       } catch (err) {
-        /* keep lat/lon fallback */
+        /* keep existing coordinate fallback */
       }
-
-      onSelect(lat, lon, displayName);
     },
   });
   return null;
@@ -77,6 +81,13 @@ export const AirMap: React.FC<AirMapProps> = ({
 }) => {
   const markerColor = aqiInfo?.color || '#06b6d4';
   const customIcon = createCustomMarker(markerColor);
+  const markerRef = useRef<L.Marker>(null);
+
+  useEffect(() => {
+    if (markerRef.current) {
+      markerRef.current.openPopup();
+    }
+  }, [lat, lon]);
 
   return (
     <div className="relative w-full h-[420px] rounded-2xl overflow-hidden border border-slate-800 shadow-2xl bg-slate-900">
@@ -98,7 +109,7 @@ export const AirMap: React.FC<AirMapProps> = ({
         />
         <MapClickHandler onSelect={onSelect} />
         <MapViewController lat={lat} lon={lon} />
-        <Marker position={[lat, lon]} icon={customIcon}>
+        <Marker ref={markerRef} position={[lat, lon]} icon={customIcon}>
           <Popup>
             <div className="p-1 space-y-1 text-slate-200">
               <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-100">
