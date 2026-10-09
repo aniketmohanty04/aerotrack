@@ -28,13 +28,10 @@ except ImportError:
         ModelTrainingError
     )
 import os
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("airquality-backend")
-
-FRONTEND_DIST = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
 
 app = FastAPI(
     title="Air Quality Tracking & ML Forecast API",
@@ -744,11 +741,6 @@ async def search_places(q: str = Query(..., min_length=1)):
             "type": result.get("type"),
         })
     return parsed_results
-
-
-assets_dir = os.path.join(FRONTEND_DIST, "assets")
-if os.path.exists(assets_dir):
-    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 
 if __name__ == "__main__":
