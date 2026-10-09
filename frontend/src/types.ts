@@ -77,6 +77,9 @@ export interface ForecastData {
   forecast_min: number;
   forecast_max: number;
   forecast: ForecastPoint[];
+  is_synthetic?: boolean;
+  data_source?: string;
+  warning?: string;
 }
 
 export interface LocationPreset {

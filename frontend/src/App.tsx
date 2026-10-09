@@ -48,6 +48,7 @@ export const App: React.FC = () => {
   const [airQuality, setAirQuality] = useState<AirQualityData | null>(null);
   const [trends, setTrends] = useState<TrendData | null>(null);
   const [forecast, setForecast] = useState<ForecastData | null>(null);
+  const [forecastError, setForecastError] = useState<string | null>(null);
 
   // Loading states
   const [isAirQualityLoading, setIsAirQualityLoading] = useState<boolean>(true);
@@ -62,6 +63,7 @@ export const App: React.FC = () => {
     setIsTrendsLoading(true);
     setIsForecastLoading(true);
     setError(null);
+    setForecastError(null);
 
     try {
       const results = await Promise.allSettled([
@@ -89,13 +91,26 @@ export const App: React.FC = () => {
         setTrends(null);
       }
 
-      // Handle ML forecast (if it fails, still display airQuality and trends!)
+      // Handle ML forecast (isolate forecast failures so live telemetry and trends remain visible)
       if (forecastResult.status === 'fulfilled') {
-        setForecast(forecastResult.value.data);
+        const fData = forecastResult.value.data;
+        if (fData.status === 'error') {
+          setForecast(null);
+          setForecastError((fData as any).message || 'Forecast unavailable.');
+        } else {
+          setForecast(fData);
+          setForecastError(null);
+        }
       } else {
-        console.warn('ML forecast failed:', forecastResult.reason);
-        failureErr = failureErr || forecastResult.reason;
+        const errResp = forecastResult.reason?.response?.data;
+        const errMsg =
+          errResp?.message ||
+          errResp?.detail?.message ||
+          (typeof errResp?.detail === 'string' ? errResp.detail : null) ||
+          'Historical air quality observations are unavailable or insufficient for this location.';
+        console.warn('ML forecast unavailable:', errMsg);
         setForecast(null);
+        setForecastError(errMsg);
       }
 
       if (failureErr) {
@@ -136,6 +151,31 @@ export const App: React.FC = () => {
   };
 
   const handleSelectLocation = handleSelect;
+
+  // Opt-in explicit demo forecast loader for demonstrations or when upstream data is unavailable
+  const handleEnableDemoForecast = async () => {
+    setIsForecastLoading(true);
+    setForecastError(null);
+    try {
+      const res = await axios.get<ForecastData>(`${API_BASE}/api/predict/${lat}/${lon}?allow_demo=true`);
+      if (res.data.status === 'error') {
+        setForecast(null);
+        setForecastError((res.data as any).message || 'Failed to load demo forecast.');
+      } else {
+        setForecast(res.data);
+      }
+    } catch (err: any) {
+      const errResp = err.response?.data;
+      const errMsg =
+        errResp?.message ||
+        errResp?.detail?.message ||
+        (typeof errResp?.detail === 'string' ? errResp.detail : null) ||
+        'Failed to load demo forecast.';
+      setForecastError(errMsg);
+    } finally {
+      setIsForecastLoading(false);
+    }
+  };
 
   // Trigger data fetches on coordinates change
   useEffect(() => {
@@ -299,7 +339,12 @@ export const App: React.FC = () => {
 
           {/* 24-Hour XGBoost Forecast Chart */}
           <div>
-            <ForecastChart data={forecast} isLoading={isForecastLoading} />
+            <ForecastChart
+              data={forecast}
+              isLoading={isForecastLoading}
+              error={forecastError}
+              onEnableDemo={handleEnableDemoForecast}
+            />
           </div>
         </section>
       </main>

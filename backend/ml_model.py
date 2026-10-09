@@ -23,12 +23,83 @@ def normalize_coordinates(lat: float, lon: float) -> tuple[float, float]:
     return round(clamped_lat, 4), round(wrapped_lon, 4)
 
 
-async def fetch_historical_air_quality(lat: float, lon: float) -> tuple[pd.DataFrame, int]:
+import logging
+
+logger = logging.getLogger("aerotrack.forecast")
+
+
+class ForecastError(Exception):
+    """Base exception for forecasting pipeline errors."""
+    def __init__(self, message: str, error_code: str = "FORECAST_ERROR", status_code: int = 500, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code
+        self.status_code = status_code
+        self.details = details or {}
+
+
+class UpstreamProviderError(ForecastError):
+    """Raised when the upstream provider fails or returns unparseable/error responses."""
+    def __init__(self, message: str, status_code: int = 502, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, error_code="UPSTREAM_PROVIDER_ERROR", status_code=status_code, details=details)
+
+
+class InsufficientDataError(ForecastError):
+    """Raised when historical observations are empty, missing, or have too few valid readings."""
+    def __init__(self, message: str, status_code: int = 422, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, error_code="INSUFFICIENT_DATA", status_code=status_code, details=details)
+
+
+class ModelTrainingError(ForecastError):
+    """Raised when model training or inference fails."""
+    def __init__(self, message: str, status_code: int = 500, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, error_code="MODEL_TRAINING_ERROR", status_code=status_code, details=details)
+
+
+def _generate_synthetic_demo_data(lat: float, lon: float) -> tuple[pd.DataFrame, int]:
+    """
+    Explicit synthetic data generator used ONLY when allow_demo=True is requested.
+    Generates simulated diurnal PM2.5 readings for demonstration purposes.
+    """
+    logger.warning(
+        f"[DEMO_MODE] Generating synthetic demonstration data for coordinates ({lat}, {lon}). "
+        "This data MUST be flagged as synthetic."
+    )
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+    start_dt = now_dt - timedelta(days=92)
+    times_gen = [start_dt + timedelta(hours=i) for i in range(92 * 24)]
+    n_gen = len(times_gen)
+    hours_arr = np.array([t.hour for t in times_gen])
+    diurnal = 16.0 + 6.0 * np.sin(2 * np.pi * (hours_arr - 6) / 24.0)
+    synth_pm25 = np.maximum(2.0, np.round(diurnal, 1)).tolist()
+
+    df = pd.DataFrame({
+        "time": pd.to_datetime(times_gen),
+        "pm25": synth_pm25,
+        "pm2_5": synth_pm25,
+        "no2": [12.0] * n_gen,
+        "o3": [28.0] * n_gen,
+        "wind_speed": [4.0] * n_gen,
+        "temperature": [18.0] * n_gen,
+        "humidity": [55.0] * n_gen,
+    })
+    return df, 0
+
+
+async def fetch_historical_air_quality(
+    lat: float,
+    lon: float,
+    allow_demo: bool = False
+) -> tuple[pd.DataFrame, int, bool]:
     """
     Fetch up to 92 days of hourly PM2.5, NO2, O3, wind speed, temperature,
     and relative humidity from Open-Meteo Air Quality API.
-    forecast_days=1 ensures hourly observations up through the current hour of today are included.
-    Returns (DataFrame, utc_offset_seconds).
+    Returns (DataFrame, utc_offset_seconds, is_synthetic).
+    
+    If allow_demo=False (production default):
+      Fails loudly with UpstreamProviderError or InsufficientDataError on failure.
+    If allow_demo=True:
+      Falls back to explicit synthetic simulation with is_synthetic=True.
     """
     lat, lon = normalize_coordinates(lat, lon)
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -41,55 +112,90 @@ async def fetch_historical_air_quality(lat: float, lon: float) -> tuple[pd.DataF
         "timezone": "auto"
     }
 
+    data = None
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-
-        hourly = data.get("hourly", {})
-        times = hourly.get("time", [])
-        pm25_vals = hourly.get("pm2_5", [])
-        no2_vals = hourly.get("nitrogen_dioxide", [])
-        o3_vals = hourly.get("ozone", [])
-        wind_vals = hourly.get("wind_speed_10m", [])
-        temp_vals = hourly.get("temperature_2m", [])
-        humidity_vals = hourly.get("relative_humidity_2m", [])
-        utc_offset_seconds = data.get("utc_offset_seconds", 0)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else 502
+        logger.error(
+            f"Open-Meteo returned HTTP {status} for coordinates ({lat}, {lon})",
+            extra={"latitude": lat, "longitude": lon, "status_code": status, "allow_demo": allow_demo}
+        )
+        if allow_demo:
+            demo_df, offset = _generate_synthetic_demo_data(lat, lon)
+            return demo_df, offset, True
+        raise UpstreamProviderError(
+            f"Upstream air quality provider returned HTTP {status}.",
+            status_code=502
+        ) from exc
+    except (httpx.RequestError, httpx.TimeoutException) as exc:
+        logger.error(
+            f"Open-Meteo network/timeout failure for coordinates ({lat}, {lon}): {type(exc).__name__}",
+            extra={"latitude": lat, "longitude": lon, "error_type": type(exc).__name__, "allow_demo": allow_demo}
+        )
+        if allow_demo:
+            demo_df, offset = _generate_synthetic_demo_data(lat, lon)
+            return demo_df, offset, True
+        raise UpstreamProviderError(
+            f"Upstream air quality provider is currently unreachable ({type(exc).__name__}).",
+            status_code=502
+        ) from exc
     except Exception as exc:
-        # Resilient fallback if coordinates have no station coverage or Open-Meteo returns error
-        now_dt = datetime.now(timezone.utc)
-        start_dt = now_dt - timedelta(days=92)
-        times_gen = [start_dt + timedelta(hours=i) for i in range(92 * 24)]
-        n_gen = len(times_gen)
-        hours_arr = np.array([t.hour for t in times_gen])
-        diurnal = 16.0 + 6.0 * np.sin(2 * np.pi * (hours_arr - 6) / 24.0)
-        synth_pm25 = np.maximum(2.0, np.round(diurnal, 1)).tolist()
+        logger.error(
+            f"Unexpected error querying Open-Meteo for coordinates ({lat}, {lon}): {exc}",
+            extra={"latitude": lat, "longitude": lon, "error_type": type(exc).__name__, "allow_demo": allow_demo}
+        )
+        if allow_demo:
+            demo_df, offset = _generate_synthetic_demo_data(lat, lon)
+            return demo_df, offset, True
+        raise UpstreamProviderError(
+            "An unexpected error occurred while contacting the upstream provider.",
+            status_code=502
+        ) from exc
 
-        return pd.DataFrame({
-            "time": times_gen,
-            "pm25": synth_pm25,
-            "pm2_5": synth_pm25,
-            "no2": [12.0] * n_gen,
-            "o3": [28.0] * n_gen,
-            "wind_speed": [4.0] * n_gen,
-            "temperature": [18.0] * n_gen,
-            "humidity": [55.0] * n_gen,
-        }), 0
+    if not isinstance(data, dict) or "hourly" not in data:
+        logger.error(f"Malformed payload from Open-Meteo for ({lat}, {lon})")
+        if allow_demo:
+            demo_df, offset = _generate_synthetic_demo_data(lat, lon)
+            return demo_df, offset, True
+        raise UpstreamProviderError("Upstream provider returned an invalid data payload.", status_code=502)
+
+    hourly = data.get("hourly", {})
+    if not isinstance(hourly, dict):
+        if allow_demo:
+            demo_df, offset = _generate_synthetic_demo_data(lat, lon)
+            return demo_df, offset, True
+        raise UpstreamProviderError("Malformed hourly object in upstream provider response.", status_code=502)
+
+    times = hourly.get("time", [])
+    pm25_vals = hourly.get("pm2_5", [])
+    no2_vals = hourly.get("nitrogen_dioxide", [])
+    o3_vals = hourly.get("ozone", [])
+    wind_vals = hourly.get("wind_speed_10m", [])
+    temp_vals = hourly.get("temperature_2m", [])
+    humidity_vals = hourly.get("relative_humidity_2m", [])
+    utc_offset_seconds = data.get("utc_offset_seconds", 0)
 
     if not times or not pm25_vals:
-        raise ValueError("No historical PM2.5 data available from Open-Meteo.")
+        logger.warning(f"Empty historical observations for coordinates ({lat}, {lon})")
+        if allow_demo:
+            demo_df, offset = _generate_synthetic_demo_data(lat, lon)
+            return demo_df, offset, True
+        raise InsufficientDataError(f"No historical PM2.5 observations returned for coordinates ({lat}, {lon}).", status_code=422)
 
     n = len(times)
     df = pd.DataFrame({
         "time": pd.to_datetime(times),
         "pm25": pm25_vals,
         "pm2_5": pm25_vals,
-        "no2": no2_vals if no2_vals and len(no2_vals) == n else [15.0] * n,
-        "o3": o3_vals if o3_vals and len(o3_vals) == n else [30.0] * n,
-        "wind_speed": wind_vals if wind_vals and len(wind_vals) == n else [3.5] * n,
-        "temperature": temp_vals if temp_vals and len(temp_vals) == n else [20.0] * n,
-        "humidity": humidity_vals if humidity_vals and len(humidity_vals) == n else [50.0] * n,
+        "no2": no2_vals if no2_vals and len(no2_vals) == n else [np.nan] * n,
+        "o3": o3_vals if o3_vals and len(o3_vals) == n else [np.nan] * n,
+        "wind_speed": wind_vals if wind_vals and len(wind_vals) == n else [np.nan] * n,
+        "temperature": temp_vals if temp_vals and len(temp_vals) == n else [np.nan] * n,
+        "humidity": humidity_vals if humidity_vals and len(humidity_vals) == n else [np.nan] * n,
     })
 
     # Sort and clean data
@@ -100,13 +206,27 @@ async def fetch_historical_air_quality(lat: float, lon: float) -> tuple[pd.DataF
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Linear interpolation and forward/backward fill to guarantee no NaNs in raw dataset
+    # Check for valid PM2.5 observations
+    valid_pm25_count = int(df["pm25"].notna().sum())
+    if valid_pm25_count < 50:
+        logger.warning(
+            f"Insufficient valid PM2.5 observations for ({lat}, {lon}): "
+            f"{valid_pm25_count} valid rows found, minimum 50 required."
+        )
+        if allow_demo:
+            demo_df, offset = _generate_synthetic_demo_data(lat, lon)
+            return demo_df, offset, True
+        raise InsufficientDataError(
+            f"Insufficient historical PM2.5 observations for coordinates ({lat}, {lon}). "
+            f"Found {valid_pm25_count} valid readings; minimum required is 50.",
+            status_code=422
+        )
+
+    # Linear interpolation and forward/backward fill on gaps for genuine observations
     df = df.interpolate(method="linear").bfill().ffill()
 
-    # Fallbacks in case all values are NaN
-    if df["pm25"].isna().all():
-        df["pm25"] = 25.0
-        df["pm2_5"] = 25.0
+    # For auxiliary weather columns, if entirely NaN, fill with neutral atmospheric defaults
+    # (Note: PM2.5 is guaranteed genuine by the valid_pm25_count check above!)
     if df["no2"].isna().all():
         df["no2"] = 15.0
     if df["o3"].isna().all():
@@ -118,7 +238,7 @@ async def fetch_historical_air_quality(lat: float, lon: float) -> tuple[pd.DataF
     if df["humidity"].isna().all():
         df["humidity"] = 50.0
 
-    return df, utc_offset_seconds
+    return df, utc_offset_seconds, False
 
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -232,13 +352,13 @@ def get_feature_columns() -> List[str]:
     ]
 
 
-async def train_and_forecast_pm25(lat: float, lon: float) -> Dict[str, Any]:
+async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = False) -> Dict[str, Any]:
     """
     Fetch 92 days of atmospheric and meteorological data, train an XGBoost model,
     and autoregressively forecast the next 24 hours of PM2.5.
     Uses in-memory caching with a 30-minute TTL.
     """
-    cache_key = (round(lat, 4), round(lon, 4))
+    cache_key = (round(lat, 4), round(lon, 4), allow_demo)
     now = time.time()
 
     if cache_key in MODEL_CACHE:
@@ -247,7 +367,11 @@ async def train_and_forecast_pm25(lat: float, lon: float) -> Dict[str, Any]:
             return cached["data"]
 
     # 1. Fetch 92 days of hourly data (PM2.5, NO2, O3, Wind Speed, Temperature, Humidity)
-    df, utc_offset_seconds = await fetch_historical_air_quality(lat, lon)
+    df, utc_offset_seconds, is_synthetic = await fetch_historical_air_quality(lat, lon, allow_demo=allow_demo)
+
+    # Ensure df["time"] is timezone-naive for safe comparison against local naive timestamps
+    if hasattr(df["time"].dtype, "tz") and df["time"].dt.tz is not None:
+        df["time"] = df["time"].dt.tz_localize(None)
 
     # Determine current timestamp aligned to Open-Meteo's timezone
     if utc_offset_seconds != 0:
@@ -291,26 +415,35 @@ async def train_and_forecast_pm25(lat: float, lon: float) -> Dict[str, Any]:
     train_df = train_df.replace([np.inf, -np.inf], np.nan).dropna(subset=feature_cols).reset_index(drop=True)
 
     if len(train_df) < 50:
-        raise ValueError("Insufficient historical data to train the forecasting model.")
+        logger.warning(f"Training dataset too small ({len(train_df)} samples) for ({lat}, {lon})")
+        raise InsufficientDataError(
+            f"Insufficient historical data to train the forecasting model (minimum 50 samples required, got {len(train_df)}).",
+            status_code=422
+        )
 
     X_train = train_df[feature_cols]
     y_train = train_df[target_col]
 
     # Verify no NaN values in training set
     if X_train.isna().any().any() or y_train.isna().any():
-        raise ValueError("Critical error: NaN values detected in training set feature matrix.")
+        logger.error(f"NaN values detected in training set feature matrix for ({lat}, {lon})")
+        raise ModelTrainingError("NaN values detected in training set feature matrix.", status_code=500)
 
     # 4. Train XGBoost Regressor (100-150 estimators for speed and accuracy)
-    model = xgb.XGBRegressor(
-        n_estimators=120,
-        max_depth=4,
-        learning_rate=0.08,
-        subsample=0.85,
-        colsample_bytree=0.85,
-        random_state=42,
-        n_jobs=-1
-    )
-    model.fit(X_train, y_train)
+    try:
+        model = xgb.XGBRegressor(
+            n_estimators=120,
+            max_depth=4,
+            learning_rate=0.08,
+            subsample=0.85,
+            colsample_bytree=0.85,
+            random_state=42,
+            n_jobs=-1
+        )
+        model.fit(X_train, y_train)
+    except Exception as exc:
+        logger.error(f"XGBoost training failure for ({lat}, {lon}): {exc}")
+        raise ModelTrainingError("Model training failed on historical observations.", status_code=500) from exc
 
     # 5. Multi-step Autoregressive Forecasting for next 24 hours
     predictions: List[Dict[str, Any]] = []
@@ -423,8 +556,13 @@ async def train_and_forecast_pm25(lat: float, lon: float) -> Dict[str, Any]:
         "forecast_average": avg_pred,
         "forecast_min": min_pred,
         "forecast_max": max_pred,
-        "forecast": predictions
+        "forecast": predictions,
+        "is_synthetic": is_synthetic,
+        "data_source": "synthetic_demo" if is_synthetic else "live_open_meteo"
     }
+
+    if is_synthetic:
+        result["warning"] = "Demonstration data generated synthetically because upstream observations are unavailable."
 
     # Cache trained model AND prediction result
     MODEL_CACHE[cache_key] = {

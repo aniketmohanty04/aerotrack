@@ -8,9 +8,24 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
 try:
-    from backend.ml_model import train_and_forecast_pm25, normalize_coordinates
+    from backend.ml_model import (
+        train_and_forecast_pm25,
+        normalize_coordinates,
+        ForecastError,
+        UpstreamProviderError,
+        InsufficientDataError,
+        ModelTrainingError
+    )
 except ImportError:
-    from ml_model import train_and_forecast_pm25, normalize_coordinates
+    from ml_model import (
+        train_and_forecast_pm25,
+        normalize_coordinates,
+        ForecastError,
+        UpstreamProviderError,
+        InsufficientDataError,
+        ModelTrainingError
+    )
+from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("airquality-backend")
@@ -399,18 +414,48 @@ async def get_trends(lat: float, lon: float):
 
 
 @app.get("/api/predict/{lat}/{lon}")
-async def get_prediction(lat: float, lon: float):
+async def get_prediction(
+    lat: float,
+    lon: float,
+    allow_demo: bool = Query(
+        False,
+        description="Explicit opt-in to return synthetic demonstration data if live data is unavailable."
+    )
+):
     """
     Calls the XGBoost forecasting model trained on 92 days of PM2.5 data
     and returns a 24-hour prediction forecast.
     """
     lat, lon = validate_coords(lat, lon)
     try:
-        forecast_result = await train_and_forecast_pm25(lat, lon)
+        forecast_result = await train_and_forecast_pm25(lat, lon, allow_demo=allow_demo)
         return forecast_result
+    except ForecastError as fe:
+        logger.error(
+            f"Forecast pipeline error for ({lat}, {lon}) [{fe.error_code}]: {fe.message}",
+            extra={"latitude": lat, "longitude": lon, "error_code": fe.error_code}
+        )
+        return JSONResponse(
+            status_code=fe.status_code,
+            content={
+                "status": "error",
+                "error_code": fe.error_code,
+                "message": fe.message,
+                "is_synthetic": False,
+                "details": fe.details
+            }
+        )
     except Exception as e:
-        logger.error(f"Forecast error for {lat}, {lon}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Forecast training failed: {str(e)}")
+        logger.error(f"Unexpected forecast error for {lat}, {lon}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "error_code": "INTERNAL_SERVER_ERROR",
+                "message": "An unexpected error occurred while generating the forecast.",
+                "is_synthetic": False
+            }
+        )
 
 
 nominatim_lock: Optional[asyncio.Lock] = None

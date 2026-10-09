@@ -16,6 +16,8 @@ import { Sparkles, Brain, Cpu, Info, CheckCircle2, AlertTriangle } from 'lucide-
 interface ForecastChartProps {
   data?: ForecastData | null;
   isLoading?: boolean;
+  error?: string | null;
+  onEnableDemo?: () => void;
 }
 
 // Reusable unit badge with hover info tooltip
@@ -59,8 +61,8 @@ const twoLineLabel = (title: string, subtitle: string, color: string) => ({ view
   );
 };
 
-export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading }) => {
-  if (isLoading || !data) {
+export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, error, onEnableDemo }) => {
+  if (isLoading) {
     return (
       <div
         className="h-[470px] flex flex-col items-center justify-center text-center space-y-4"
@@ -94,6 +96,46 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading })
           <Cpu className="w-3.5 h-3.5 text-purple-400" />
           <span>XGBoost Autoregressive Model • 92 Days Training Set</span>
         </div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div
+        className="h-[470px] flex flex-col items-center justify-center text-center space-y-4 p-6"
+        style={{
+          background: 'rgba(255, 255, 255, 0.02)',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
+          borderRadius: 12,
+          padding: 24,
+          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.2)',
+          backdropFilter: 'blur(8px)',
+        }}
+      >
+        <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center">
+          <AlertTriangle className="w-7 h-7 text-amber-400" />
+        </div>
+        <div className="space-y-2 max-w-md">
+          <h3 className="text-base font-bold text-white">
+            Forecast Unavailable
+          </h3>
+          <p className="text-xs text-slate-300 leading-relaxed">
+            {error || "Historical air quality observations are unavailable or insufficient for this location."}
+          </p>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            AeroTrack never silently fabricates PM2.5 readings. Genuine forecasting requires at least 50 valid historical observations from Open-Meteo.
+          </p>
+        </div>
+        {onEnableDemo && (
+          <button
+            onClick={onEnableDemo}
+            className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/40 transition-colors shadow-sm"
+          >
+            <Brain className="w-4 h-4 text-purple-300" />
+            <span>Load Opt-In Demo Forecast (Simulated)</span>
+          </button>
+        )}
       </div>
     );
   }
@@ -244,6 +286,21 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading })
         backdropFilter: 'blur(8px)',
       }}
     >
+      {/* Explicit Provenance Banner for Synthetic Demo Data */}
+      {data.is_synthetic && (
+        <div className="px-3.5 py-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs flex items-start gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+          <div className="space-y-0.5 text-left">
+            <span className="font-bold tracking-wide uppercase text-[11px] text-amber-300">
+              DEMO / SYNTHETIC DATA
+            </span>
+            <p className="text-[11px] text-amber-200/90 leading-relaxed">
+              {data.warning || "Upstream historical observations are unavailable for these coordinates. This forecast was generated using simulated diurnal PM2.5 data for demonstration purposes."}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Dynamic Plain-English Summary Line */}
       <div className={`px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between gap-2 ${forecastSummaryStyle}`}>
         <div className="flex items-center gap-2">
@@ -262,10 +319,17 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading })
               <Sparkles className="w-4 h-4" />
             </div>
             <h2 className="text-lg font-bold text-white">24-Hour ML PM2.5 Forecast</h2>
-            <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-purple-500/10 text-purple-300 border border-purple-500/30">
-              <Brain className="w-3 h-3" />
-              XGBoost Model
-            </span>
+            {data.is_synthetic ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase tracking-wider">
+                <AlertTriangle className="w-3 h-3" />
+                Demo / Synthetic
+              </span>
+            ) : (
+              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-purple-500/10 text-purple-300 border border-purple-500/30">
+                <Brain className="w-3 h-3" />
+                XGBoost Model
+              </span>
+            )}
           </div>
 
           {/* Sub-header explaining the curve and band */}
@@ -278,7 +342,11 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading })
               Trajectory: <span className={`font-semibold ${trajectoryColor}`}>{trajectoryText}</span> (Δ {(lastPred - firstPred).toFixed(1)} µg/m³)
             </span>
             <span className="text-slate-400">•</span>
-            <span>Trained on {days_trained} days ({training_samples} hourly observations)</span>
+            <span>
+              {data.is_synthetic
+                ? "Simulated Demo Observations"
+                : `Trained on ${days_trained} days (${training_samples} hourly observations)`}
+            </span>
           </div>
         </div>
       </div>
