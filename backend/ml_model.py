@@ -295,7 +295,8 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     no2 = df["no2"] if "no2" in df.columns else 15.0
     o3 = df["o3"] if "o3" in df.columns else 30.0
 
-    df["wind_pm25_ratio"] = pm25_series / (np.maximum(wind, 0.0) + 1.0)
+    # Use pm25_lag1 (y_{t-1}) to prevent target leakage
+    df["wind_pm25_ratio"] = df["pm25_lag1"] / (np.maximum(wind, 0.0) + 1.0)
     
     # Avoid zero-division if temperature == -1.0
     temp_denom = temp + 1.0
