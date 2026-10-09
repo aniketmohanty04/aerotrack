@@ -31,7 +31,8 @@ try:
         clean_and_impute_series,
         normalize_coordinates,
         calibrate_conformal_quantiles,
-        compute_prediction_interval
+        compute_prediction_interval,
+        predict_autoregressive_rollout
     )
 except ImportError:
     from ml_model import (
@@ -41,7 +42,8 @@ except ImportError:
         clean_and_impute_series,
         normalize_coordinates,
         calibrate_conformal_quantiles,
-        compute_prediction_interval
+        compute_prediction_interval,
+        predict_autoregressive_rollout
     )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -131,88 +133,21 @@ def run_autoregressive_rollout(
     model: xgb.XGBRegressor,
     history_df: pd.DataFrame,
     feature_cols: List[str],
-    steps: int = 24
+    steps: int = 24,
+    future_weather_df: Optional[pd.DataFrame] = None
 ) -> List[float]:
     """
-    Autoregressively roll out predictions over `steps` hours.
+    Autoregressively roll out predictions over `steps` hours using the production ML pipeline.
     At each step h, lags and rolling stats are derived strictly from history and
     previous model predictions (no ground truth peek).
     """
-    last_row = history_df.iloc[-1]
-    last_time = last_row["time"]
-
-    last_wind = float(last_row.get("wind_speed", 3.5))
-    last_temp = float(last_row.get("temperature", 20.0))
-    last_humidity = float(last_row.get("humidity", 50.0))
-    last_no2 = float(last_row.get("no2", 15.0))
-    last_o3 = float(last_row.get("o3", 30.0))
-
-    target_series = history_df["pm25"] if "pm25" in history_df.columns else history_df["pm2_5"]
-    pm_history = [float(x) for x in target_series.values]
-
-    temp_denom = last_temp + 1.0 if abs(last_temp + 1.0) > 1e-4 else 1e-4
-    humidity_temp_ratio = float(last_humidity / temp_denom)
-    no2_o3_ratio = float(last_no2 / (max(0.0, last_o3) + 1.0))
-    wind_denom = max(0.0, last_wind) + 1.0
-
-    preds = []
-
-    for step in range(1, steps + 1):
-        next_time = last_time + pd.Timedelta(hours=step)
-        hour = next_time.hour
-        day_of_week = next_time.dayofweek
-
-        hour_sin = np.sin(2.0 * np.pi * hour / 24.0)
-        hour_cos = np.cos(2.0 * np.pi * hour / 24.0)
-        dow_sin = np.sin(2.0 * np.pi * day_of_week / 7.0)
-        dow_cos = np.cos(2.0 * np.pi * day_of_week / 7.0)
-
-        pm25_lag1 = pm_history[-1]
-        pm25_lag2 = pm_history[-2] if len(pm_history) >= 2 else pm25_lag1
-        pm25_lag3 = pm_history[-3] if len(pm_history) >= 3 else pm25_lag2
-        pm25_lag6 = pm_history[-6] if len(pm_history) >= 6 else pm25_lag3
-        pm25_lag12 = pm_history[-12] if len(pm_history) >= 12 else pm25_lag6
-        pm25_lag24 = pm_history[-24] if len(pm_history) >= 24 else pm25_lag12
-
-        pm25_lag1_squared = float(pm25_lag1 ** 2)
-        pm25_lag24_squared = float(pm25_lag24 ** 2)
-
-        wind_pm25_ratio = float(pm25_lag1 / wind_denom)
-
-        recent_6 = pm_history[-6:]
-        recent_24 = pm_history[-24:]
-        rolling_mean_6 = float(np.mean(recent_6))
-        rolling_mean_24 = float(np.mean(recent_24))
-        rolling_std_24 = float(np.std(recent_24)) if len(recent_24) > 1 else 0.0
-
-        feature_map = {
-            "hour_sin": hour_sin,
-            "hour_cos": hour_cos,
-            "dow_sin": dow_sin,
-            "dow_cos": dow_cos,
-            "wind_pm25_ratio": wind_pm25_ratio,
-            "humidity_temp_ratio": humidity_temp_ratio,
-            "no2_o3_ratio": no2_o3_ratio,
-            "pm25_lag1_squared": pm25_lag1_squared,
-            "pm25_lag24_squared": pm25_lag24_squared,
-            "pm25_lag1": pm25_lag1,
-            "pm25_lag2": pm25_lag2,
-            "pm25_lag3": pm25_lag3,
-            "pm25_lag6": pm25_lag6,
-            "pm25_lag12": pm25_lag12,
-            "pm25_lag24": pm25_lag24,
-            "rolling_mean_6": rolling_mean_6,
-            "rolling_mean_24": rolling_mean_24,
-            "rolling_std_24": rolling_std_24
-        }
-        feat_vector = np.array([[feature_map[c] for c in feature_cols]], dtype=np.float32)
-
-        pred_val = float(model.predict(feat_vector)[0])
-        pred_val = max(1.0, round(pred_val, 1))
-        preds.append(pred_val)
-        pm_history.append(pred_val)
-
-    return preds
+    return predict_autoregressive_rollout(
+        model=model,
+        history_df=history_df,
+        feature_cols=feature_cols,
+        steps=steps,
+        future_weather_df=future_weather_df
+    )
 
 
 def evaluate_location_dataset(
@@ -338,7 +273,14 @@ def evaluate_location_dataset(
         rolling_std_24 = float(np.std(history_up_to_origin[target_col].values[-24:])) if len(history_up_to_origin) >= 24 else 0.0
 
         # Autoregressive multi-step XGBoost predictions
-        xgb_preds = run_autoregressive_rollout(model, history_up_to_origin, feature_cols, steps=horizon)
+        future_weather_slice = df.iloc[origin_idx + 1 : origin_idx + 1 + horizon]
+        xgb_preds = run_autoregressive_rollout(
+            model,
+            history_up_to_origin,
+            feature_cols,
+            steps=horizon,
+            future_weather_df=future_weather_slice
+        )
         # Persistence predictions
         persist_preds = evaluate_persistence(latest_observed, horizon=horizon)
 

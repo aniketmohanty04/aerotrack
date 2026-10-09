@@ -42,7 +42,7 @@ To anticipate air quality fluctuations, AeroTrack deploys an on-demand machine l
 
 - **Interactive Leaflet World Map**: Click-to-query map interface supporting smooth panning, zooming, coordinate clamping, and custom location markers.
 - **Place Search with Autocomplete**: Rate-limited, debounced search against OpenStreetMap's Nominatim engine with direct jump-to-location behavior.
-- **Reverse Geocoding**: Automatic resolution of raw GPS coordinates to city, administrative subdivision, and country names via BigDataCloud.
+- **Reverse Geocoding**: Multi-provider resolution of GPS coordinates to city, administrative subdivision, and country names via OpenStreetMap Nominatim with BigDataCloud fallback (24h caching for successful resolutions, zero failure caching).
 - **Real-Time Pollutant Breakdown**: Instant telemetry cards for 6 primary criteria air pollutants:
   - Fine Particulate Matter (PM2.5)
   - Coarse Particulate Matter (PM10)
@@ -148,37 +148,53 @@ AeroTrack avoids unverified accuracy claims by including an open, fully reproduc
 To eliminate data leakage, the held-out test partition strictly contains completed historical observations (excluding future provider forecasts) and is evaluated chronologically across multi-step walk-forward horizons.
 
 ### Reproducing the Benchmark
-Run the reproducible evaluation script against genuine Open-Meteo observations:
+Run the reproducible evaluation script against genuine Open-Meteo observations for all benchmark locations:
+```bash
+python backend/evaluate_model.py
+```
+Or evaluate an individual city:
 ```bash
 python backend/evaluate_model.py --city Delhi
 ```
 
-### Verified Benchmark Results (New Delhi, India)
-- **Observation Window**: 2,209 hourly rows (92 days)
-- **Holdout Test Set**: 332 completed historical observations across 13 walk-forward 24-hour windows (312 evaluated forecast steps).
+### Verified Multi-City Benchmark Results
+Evaluated on completed historical observations across 13 walk-forward 24-hour evaluation horizons (312 held-out hourly forecast steps per city) with zero future provider forecast contamination and strictly causal imputation.
 
 #### Overall 24-Hour Horizon Summary
 
-| Model | MAE (µg/m³) | RMSE (µg/m³) | R² Score | Skill Score vs Persistence |
-| :--- | :---: | :---: | :---: | :---: |
-| **XGBoost (Autoregressive)** | **31.77** | **41.85** | **0.5046** | **+0.2175** (+21.8% RMSE improvement) |
-| Persistence Baseline | 39.82 | 53.48 | 0.1912 | 0.0000 |
+| Location | Model | MAE (µg/m³) | RMSE (µg/m³) | $R^2$ Score | Skill Score vs Persistence |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **New Delhi, India** | **XGBoost (Autoregressive)** | **23.88** | **31.76** | **0.7148** | **+0.4061** (+40.6% RMSE improvement) |
+| | Persistence Baseline | 39.82 | 53.48 | 0.1912 | 0.0000 |
+| **London, UK** | **XGBoost (Autoregressive)** | **0.99** | **1.34** | **0.5903** | **+0.2472** (+24.7% RMSE improvement) |
+| | Persistence Baseline | 1.24 | 1.78 | 0.2762 | 0.0000 |
+| **New York, USA** | **XGBoost (Autoregressive)** | **5.46** | **9.39** | **0.7463** | **+0.4677** (+46.8% RMSE improvement) |
+| | Persistence Baseline | 10.93 | 17.64 | 0.1039 | 0.0000 |
 
 #### Performance by Forecast Lead Time ($h$ hours ahead)
 
-| Lead Time | XGBoost MAE | Persistence MAE | XGBoost RMSE | Persistence RMSE | Skill Score |
-| :---: | :---: | :---: | :---: | :---: | :---: |
-| **+1h** | **3.01 µg/m³** | 6.75 µg/m³ | **3.49 µg/m³** | 8.00 µg/m³ | **+0.5637** |
-| **+6h** | **23.21 µg/m³** | 40.39 µg/m³ | **28.04 µg/m³** | 51.97 µg/m³ | **+0.4605** |
-| **+12h** | **40.43 µg/m³** | 45.28 µg/m³ | **49.60 µg/m³** | 59.34 µg/m³ | **+0.1641** |
-| **+24h** | **50.29 µg/m³** | 53.41 µg/m³ | **60.57 µg/m³** | 64.24 µg/m³ | **+0.0571** |
+| Location | Lead Time | XGBoost MAE | Persistence MAE | XGBoost RMSE | Persistence RMSE | Skill Score |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **New Delhi** | **+1h** | **2.41 µg/m³** | 6.75 µg/m³ | **3.00 µg/m³** | 8.00 µg/m³ | **+0.6250** |
+| | **+6h** | **15.35 µg/m³** | 40.39 µg/m³ | **18.27 µg/m³** | 51.97 µg/m³ | **+0.6485** |
+| | **+12h** | **32.04 µg/m³** | 45.28 µg/m³ | **39.02 µg/m³** | 59.34 µg/m³ | **+0.3424** |
+| | **+24h** | **29.18 µg/m³** | 53.41 µg/m³ | **33.09 µg/m³** | 64.24 µg/m³ | **+0.4849** |
+| **London** | **+1h** | **0.42 µg/m³** | 0.58 µg/m³ | **0.53 µg/m³** | 0.75 µg/m³ | **+0.2933** |
+| | **+6h** | 1.25 µg/m³ | **1.16 µg/m³** | 1.67 µg/m³ | **1.43 µg/m³** | -0.1678 |
+| | **+12h** | **0.72 µg/m³** | 1.15 µg/m³ | **0.84 µg/m³** | 1.61 µg/m³ | **+0.4783** |
+| | **+24h** | **1.23 µg/m³** | 1.91 µg/m³ | **1.49 µg/m³** | 2.55 µg/m³ | **+0.4157** |
+| **New York** | **+1h** | **0.83 µg/m³** | 1.71 µg/m³ | **1.16 µg/m³** | 2.17 µg/m³ | **+0.4654** |
+| | **+6h** | **3.78 µg/m³** | 7.83 µg/m³ | **5.32 µg/m³** | 11.16 µg/m³ | **+0.5233** |
+| | **+12h** | **5.90 µg/m³** | 13.47 µg/m³ | **10.29 µg/m³** | 19.64 µg/m³ | **+0.4761** |
+| | **+24h** | **11.37 µg/m³** | 13.00 µg/m³ | **18.86 µg/m³** | 18.93 µg/m³ | **+0.0037** |
 
 #### Uncertainty Interval Empirical Coverage (90% Nominal Target)
 
-| Uncertainty Method | Empirical 24h Coverage | Mean Interval Width | Calibration Strategy |
-| :--- | :---: | :---: | :--- |
-| **Split Conformal Prediction** | **94.6%** | **138.6 µg/m³** | Calibrated on validation holdout non-conformity scores |
-| Heuristic Uncertainty Band | 71.2% | 99.3 µg/m³ | Uncalibrated heuristic ($1.645 \cdot \sigma \cdot (1 + 0.03h)$) |
+| Location | Split Conformal Coverage (90% Target) | Conformal Mean Width | Heuristic Fallback Coverage | Heuristic Mean Width |
+| :--- | :---: | :---: | :---: | :---: |
+| **New Delhi** | **90.4%** | 99.3 µg/m³ | 79.2% | 87.8 µg/m³ |
+| **London** | **95.2%** | 6.6 µg/m³ | 97.4% | 5.6 µg/m³ |
+| **New York** | **92.6%** | 33.7 µg/m³ | 79.8% | 19.9 µg/m³ |
 
 ---
 
@@ -223,17 +239,28 @@ On both the 7-day trend chart and the 24-hour forecast chart, AeroTrack displays
 
 ---
 
-## 8. API Endpoints
+## 8. API Endpoints & Specification
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` / `HEAD` | `/` | API status manifest, health overview, and endpoint discovery directory |
-| `GET` / `HEAD` | `/api/health` | Dedicated lightweight uptime and health-check endpoint for cloud platforms |
-| `GET` | `/api/air-quality/{lat}/{lon}` | Current pollutant telemetry, US AQI score, and individual pollutant ratings |
-| `GET` | `/api/trends/{lat}/{lon}` | 7-day hourly historical and current pollutant trends (PM2.5, PM10, O₃, NO₂, AQI) |
-| `GET` | `/api/predict/{lat}/{lon}` | Trains a localized XGBoost regressor and returns a 24-hour autoregressive PM2.5 forecast |
-| `GET` | `/api/search?q={query}` | Autocomplete search for global places with rate-limiting and debouncing |
-| `GET` | `/api/reverse-geocode/{lat}/{lon}` | Resolves latitude/longitude coordinates into city, administrative region, and country |
+### Endpoints Directory
+
+| Method | Endpoint | Query / Path Parameters | Error Responses | Description |
+|---|---|---|---|---|
+| `GET` / `HEAD` | `/` | — | — | API status manifest, health overview, documentation directory, and live frontend link |
+| `GET` / `HEAD` | `/api/health` | — | — | Lightweight uptime ping endpoint (zero external dependencies, sub-5ms) |
+| `GET` / `HEAD` | `/api/info` | — | — | API metadata and endpoint index |
+| `GET` | `/api/air-quality/{lat}/{lon}` | `lat` (-90 to 90), `lon` (-180 to 180) | `400`, `502`, `500` | Current criteria pollutant telemetry, US AQI score, individual pollutant ratings, and advisories |
+| `GET` | `/api/trends/{lat}/{lon}` | `lat` (-90 to 90), `lon` (-180 to 180) | `400`, `502`, `500` | 7-day hourly historical & forecast trends with strictly isolated historical rolling statistics |
+| `GET` | `/api/predict/{lat}/{lon}` | `lat`, `lon`, `allow_demo` (bool, default `false`) | `400`, `422`, `502`, `500` | On-demand XGBoost 24-hour PM2.5 forecast with Split Conformal 90% prediction intervals |
+| `GET` | `/api/search` | `q` (string, min length 1) | `429`, `502`, `504` | Autocomplete place search via Nominatim (cached 10m; distinguishes empty results from errors) |
+| `GET` | `/api/reverse-geocode/{lat}/{lon}` | `lat` (-90 to 90), `lon` (-180 to 180) | `400` | Two-tier GPS reverse geocoding via Nominatim + BigDataCloud fallback (24h cache on success) |
+
+### Environment Variables
+
+| Variable | Scope | Default Value | Description |
+|---|---|---|---|
+| `ALLOWED_ORIGINS` | Backend | `https://aerotrack-three.vercel.app,http://localhost:5173,...` | Comma-separated list of permitted CORS origins |
+| `PORT` | Backend | `8000` | Server listen port for Uvicorn |
+| `VITE_API_URL` | Frontend | `""` (or production backend URL) | Backend API base URL consumed by Vite React SPA |
 
 ---
 

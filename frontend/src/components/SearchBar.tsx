@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Search, Loader2, MapPin } from 'lucide-react';
+import { Search, Loader2, MapPin, AlertCircle } from 'lucide-react';
 
 interface SearchResult {
   name: string;
@@ -21,6 +21,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isOpen, setIsOpen] = useState<boolean>(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -36,6 +37,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
       setResults([]);
       setIsLoading(false);
       setIsOpen(false);
+      setSearchError(null);
       return;
     }
 
@@ -43,14 +45,23 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
 
     debounceTimerRef.current = setTimeout(async () => {
       try {
+        setSearchError(null);
         const url = `${API_BASE}/api/search?q=${encodeURIComponent(trimmed)}`;
         const res = await axios.get<SearchResult[]>(url);
         const searchResults = res.data || [];
         setResults(searchResults);
-        setIsOpen(searchResults.length > 0);
-      } catch (err) {
+        setIsOpen(true);
+      } catch (err: any) {
         console.error('Nominatim place search failed:', err);
         setResults([]);
+        setIsOpen(true);
+        if (err.response?.status === 429) {
+          setSearchError('Search rate limit reached. Please wait a moment.');
+        } else if (err.response?.status >= 500) {
+          setSearchError('Place search temporarily unavailable.');
+        } else {
+          setSearchError('Unable to search places. Please check your connection.');
+        }
       } finally {
         setIsLoading(false);
       }
@@ -88,6 +99,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
     setQuery(item.name);
     setIsOpen(false);
     setResults([]);
+    setSearchError(null);
   };
 
   const getFullNameRemainder = (name: string, fullName: string) => {
@@ -130,8 +142,22 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
       </div>
 
       {/* Autocomplete Dropdown */}
-      {isOpen && results.length > 0 && (
+      {isOpen && (results.length > 0 || searchError || (!isLoading && query.trim().length >= 2)) && (
         <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl z-[500] overflow-hidden divide-y divide-slate-800/80 backdrop-blur-xl animate-in fade-in-0 duration-150 max-h-80 overflow-y-auto">
+          {searchError && (
+            <div className="px-4 py-3 text-xs text-amber-400 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span>{searchError}</span>
+            </div>
+          )}
+
+          {!searchError && results.length === 0 && !isLoading && (
+            <div className="px-4 py-3 text-xs text-slate-400 flex items-center gap-2">
+              <MapPin className="w-3.5 h-3.5 text-slate-500 flex-shrink-0" />
+              <span>No places found for &quot;{query.trim()}&quot;</span>
+            </div>
+          )}
+
           {results.map((item, idx) => {
             const remainder = getFullNameRemainder(item.name, item.full_name);
 

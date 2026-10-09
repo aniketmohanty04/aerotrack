@@ -256,9 +256,15 @@ def clean_and_impute_series(
     target_col: str = "pm25"
 ) -> pd.DataFrame:
     """
-    Interpolate and impute missing observations strictly within the historical boundary.
-    Must be called on historical data AFTER filtering to the historical cutoff
-    so that future observations cannot leak backwards via bfill() or interpolation.
+    Causal interpolation and imputation module:
+    Ensures that for any timestamp t, missing values and features depend STRICTLY
+    on observations at or before t.
+    Zero future-information leakage:
+    - Never uses bfill() across subsequent time steps.
+    - Never uses two-sided linear interpolation looking into future observations.
+    - Missing values are causally forward-filled (ffill) from preceding observations.
+    - Initial missing values before the first valid observation are pre-filled with
+      the first valid observation so earlier rows cannot depend on later observations.
     """
     df = df.copy()
     col = target_col if target_col in df.columns else "pm2_5"
@@ -269,21 +275,37 @@ def clean_and_impute_series(
             status_code=422
         )
 
-    # Linear interpolation strictly within historical observations,
-    # followed by ffill() and bfill() strictly within this historical partition.
-    df = df.interpolate(method="linear").ffill().bfill()
+    # Sort strictly by timestamp to ensure causal temporal ordering
+    df = df.sort_values("time").reset_index(drop=True)
+
+    # Handle leading missing values: find first valid index for target column
+    first_idx = df[col].first_valid_index()
+    if first_idx is not None and first_idx > 0:
+        first_val = df.loc[first_idx, col]
+        df.loc[:first_idx - 1, col] = first_val
+        if "pm25" in df.columns and "pm2_5" in df.columns:
+            df.loc[:first_idx - 1, "pm2_5"] = first_val
+
+    # Pure causal forward-fill: missing values at t take the latest valid value at <= t
+    df = df.ffill()
 
     # Fill auxiliary atmospheric defaults if completely missing
-    if "no2" in df.columns and df["no2"].isna().all():
-        df["no2"] = 15.0
-    if "o3" in df.columns and df["o3"].isna().all():
-        df["o3"] = 30.0
-    if "wind_speed" in df.columns and df["wind_speed"].isna().all():
-        df["wind_speed"] = 3.5
-    if "temperature" in df.columns and df["temperature"].isna().all():
-        df["temperature"] = 20.0
-    if "humidity" in df.columns and df["humidity"].isna().all():
-        df["humidity"] = 50.0
+    defaults = {
+        "no2": 15.0,
+        "o3": 30.0,
+        "wind_speed": 3.5,
+        "temperature": 20.0,
+        "humidity": 50.0
+    }
+    for col_name, default_val in defaults.items():
+        if col_name in df.columns:
+            if df[col_name].isna().all():
+                df[col_name] = default_val
+            else:
+                first_aux_idx = df[col_name].first_valid_index()
+                if first_aux_idx is not None and first_aux_idx > 0:
+                    df.loc[:first_aux_idx - 1, col_name] = df.loc[first_aux_idx, col_name]
+                df[col_name] = df[col_name].ffill().fillna(default_val)
 
     return df
 
@@ -405,7 +427,8 @@ def predict_autoregressive_rollout(
     history_df: pd.DataFrame,
     feature_cols: List[str],
     steps: int = 24,
-    future_weather_df: Optional[pd.DataFrame] = None
+    future_weather_df: Optional[pd.DataFrame] = None,
+    target_col: str = "pm25"
 ) -> List[float]:
     """
     Autoregressively roll out predictions over `steps` hours.
@@ -422,7 +445,9 @@ def predict_autoregressive_rollout(
     last_no2 = float(last_row.get("no2", 15.0))
     last_o3 = float(last_row.get("o3", 30.0))
 
-    target_series = history_df["pm25"] if "pm25" in history_df.columns else history_df["pm2_5"]
+    target_series = history_df[target_col] if target_col in history_df.columns else (
+        history_df["pm25"] if "pm25" in history_df.columns else history_df["pm2_5"]
+    )
     pm_history = [float(x) for x in target_series.values]
 
     preds: List[float] = []
@@ -590,7 +615,15 @@ def calibrate_conformal_quantiles(
         if len(gt) < horizon:
             continue
 
-        preds = predict_autoregressive_rollout(model, history_to_origin, feature_cols, steps=horizon)
+        future_weather_slice = history_df.iloc[origin + 1 : origin + 1 + horizon]
+        preds = predict_autoregressive_rollout(
+            model,
+            history_to_origin,
+            feature_cols,
+            steps=horizon,
+            target_col=target_col,
+            future_weather_df=future_weather_slice
+        )
         for h in range(1, horizon + 1):
             residuals_by_h[h].append(abs(float(gt[h - 1]) - float(preds[h - 1])))
 

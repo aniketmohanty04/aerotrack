@@ -349,13 +349,13 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
                   y={15}
                   stroke="#10b981"
                   strokeWidth={2.5}
-                  label={twoLineLabel('Safe Limit: 15', 'WHO Guideline', '#10b981')}
+                  label={twoLineLabel('Safe: 15', 'WHO 24h Guideline', '#10b981')}
                 />
                 <ReferenceLine
-                  y={35}
+                  y={35.5}
                   stroke="#f59e0b"
                   strokeWidth={2.5}
-                  label={twoLineLabel('Caution Limit: 35', 'Moderate Threshold', '#f59e0b')}
+                  label={twoLineLabel('Caution: 35.5', 'US EPA USG (24h)', '#f59e0b')}
                 />
               </>
             )}
@@ -401,8 +401,8 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
       <div style={{ display: 'flex', gap: 20, fontSize: 11, color: '#94a3b8', marginTop: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
         <span><span style={{ color: dataLineColor, fontWeight: 700 }}>—</span> {metric === 'pm2_5' ? 'Observed PM2.5 (Historical)' : 'Observed AQI (Historical)'}</span>
         <span><span style={{ color: '#c084fc', fontWeight: 700 }}>┅</span> Forecast (Upcoming Projection)</span>
-        <span><span style={{ color: '#10b981', fontWeight: 600 }}>—</span> Safe Limit: 15 µg/m³</span>
-        <span><span style={{ color: '#f59e0b', fontWeight: 600 }}>—</span> Caution Limit: 35 µg/m³</span>
+        <span><span style={{ color: '#10b981', fontWeight: 600 }}>—</span> Safe Limit: 15 µg/m³ (WHO 24h Guideline)</span>
+        <span><span style={{ color: '#f59e0b', fontWeight: 600 }}>—</span> Caution Limit: 35.5 µg/m³ (US EPA USG, 24h)</span>
       </div>
     </div>
   );

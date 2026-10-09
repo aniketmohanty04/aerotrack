@@ -205,3 +205,44 @@ def test_changing_future_observations_cannot_change_historical_features_or_targe
     assert past_clean_B.loc[95, "pm25"] == pytest.approx(expected_filled_val)
     assert past_clean_A.loc[95, "pm25"] != 300.0
     assert past_clean_B.loc[95, "pm25"] != 2.0
+
+
+def test_causal_imputation_earlier_rows_cannot_depend_on_later_observations():
+    """
+    Direct causal independence test:
+    Proves that missing values in earlier rows are causally imputed strictly from past data,
+    and modifying ANY later row produces zero change in earlier imputed values or features.
+    """
+    from backend.ml_model import clean_and_impute_series
+
+    # Base dataset of 80 hours
+    df_base1 = make_dummy_timeseries(n_hours=80, start_time="2026-07-01T00:00")
+    # Introduce missing values in interior rows 30 and 31
+    df_base1.loc[30, "pm25"] = np.nan
+    df_base1.loc[31, "pm25"] = np.nan
+
+    # Create variant 2 where subsequent row 50 has a massive spike, and row 60 is dropped
+    df_base2 = df_base1.copy()
+    df_base2.loc[50, "pm25"] = 999.0
+    df_base2.loc[50, "pm2_5"] = 999.0
+    df_base2.loc[60, "pm25"] = 1.0
+    df_base2.loc[60, "pm2_5"] = 1.0
+
+    imputed1 = clean_and_impute_series(df_base1)
+    imputed2 = clean_and_impute_series(df_base2)
+
+    # Imputed rows 0 through 49 MUST be 100% bit-for-bit identical
+    pd.testing.assert_frame_equal(imputed1.iloc[:50], imputed2.iloc[:50])
+
+    # Check causal value: rows 30 and 31 must equal row 29, NOT interpolated towards row 50
+    expected_val = df_base1.loc[29, "pm25"]
+    assert imputed1.loc[30, "pm25"] == pytest.approx(expected_val)
+    assert imputed1.loc[31, "pm25"] == pytest.approx(expected_val)
+    assert imputed2.loc[30, "pm25"] == pytest.approx(expected_val)
+    assert imputed2.loc[31, "pm25"] == pytest.approx(expected_val)
+
+    # Features for rows 0 through 49 must also be 100% identical
+    feat1 = engineer_features(imputed1)
+    feat2 = engineer_features(imputed2)
+    pd.testing.assert_frame_equal(feat1.iloc[:50], feat2.iloc[:50])
+

@@ -39,12 +39,26 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for frontend development and production
+# Allowed CORS origins
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+if allowed_origins_env.strip():
+    allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+else:
+    allowed_origins = [
+        "https://aerotrack-three.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+    ]
+
+# Restrict CORS to configured production frontend and development hosts
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"^https:\/\/aerotrack-.*\.vercel\.app$",
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "HEAD", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -355,10 +369,10 @@ async def get_air_quality(lat: float, lon: float):
 
     except httpx.HTTPError as e:
         logger.error(f"Open-Meteo API request failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to fetch air quality data from Open-Meteo: {str(e)}")
+        raise HTTPException(status_code=502, detail="Upstream air quality provider is currently unavailable.")
     except Exception as e:
-        logger.error(f"Unexpected error in /api/air-quality: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in /api/air-quality: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An error occurred while processing air quality data.")
 
 
 def clean_trend_numeric(val: Any, round_digits: int = 1) -> Optional[float]:
@@ -528,10 +542,10 @@ async def get_trends(lat: float, lon: float):
 
     except httpx.HTTPError as e:
         logger.error(f"Open-Meteo trends error: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to fetch trends from Open-Meteo: {str(e)}")
+        raise HTTPException(status_code=502, detail="Upstream air quality trends service is currently unavailable.")
     except Exception as e:
-        logger.error(f"Unexpected error in /api/trends: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in /api/trends: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An error occurred while processing air quality trends.")
 
 
 @app.get("/api/predict/{lat}/{lon}")
@@ -580,9 +594,17 @@ async def get_prediction(
 
 
 REVERSE_GEOCODE_CACHE: Dict[Tuple[float, float], Tuple[float, dict]] = {}
-CACHE_TTL_GEOCODE_SECONDS = 86400  # 24 hours
+CACHE_TTL_GEOCODE_SECONDS = 86400  # 24 hours for successful geocode responses
+SEARCH_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+CACHE_TTL_SEARCH_SECONDS = 600  # 10 minutes for place search queries
+
 nominatim_lock: Optional[asyncio.Lock] = None
 last_nominatim_call = 0.0
+
+NOMINATIM_HEADERS = {
+    "User-Agent": "AeroTrack/1.0 (https://github.com/aniketmohanty04/aerotrack; contact: aniketmohanty04@gmail.com)",
+    "Accept-Language": "en"
+}
 
 
 def get_nominatim_lock() -> asyncio.Lock:
@@ -593,19 +615,31 @@ def get_nominatim_lock() -> asyncio.Lock:
 
 
 async def reverse_geocode(lat: float, lon: float) -> dict:
-    cache_key = (round(lat, 3), round(lon, 3))
+    """
+    Reverse geocodes coordinates with multi-provider redundancy:
+    1. Primary: OpenStreetMap Nominatim with English localization.
+    2. Fallback: BigDataCloud Reverse Geocoding API if Nominatim times out, throttles, or returns empty.
+    
+    Caching & Failure Semantics:
+    - Successful or partial location results (where at least one of city, region, or country is known)
+      are cached for 24 hours.
+    - Upstream failures or null fallback responses are NEVER cached, preventing transient outages
+      from poisoning coordinates.
+    """
+    cache_key = (round(lat, 4), round(lon, 4))
     now = time.time()
     if cache_key in REVERSE_GEOCODE_CACHE:
         ts, cached_val = REVERSE_GEOCODE_CACHE[cache_key]
         if now - ts < CACHE_TTL_GEOCODE_SECONDS:
+            logger.debug(f"Reverse geocode cache HIT for {cache_key}: {cached_val}")
             return cached_val
 
-    url = "https://nominatim.openstreetmap.org/reverse"
-    headers = {
-        "User-Agent": "AeroTrack/1.0 (air quality demo project)",
-        "Accept-Language": "en"
-    }
-    params = {
+    global last_nominatim_call
+    data: Optional[Dict[str, Any]] = None
+
+    # --- 1. Primary: OpenStreetMap Nominatim ---
+    url_nom = "https://nominatim.openstreetmap.org/reverse"
+    params_nom = {
         "lat": lat,
         "lon": lon,
         "format": "json",
@@ -614,77 +648,118 @@ async def reverse_geocode(lat: float, lon: float) -> dict:
         "addressdetails": 1,
         "namedetails": 1,
     }
-    
-    global last_nominatim_call
-    data = None
+
     try:
         async with get_nominatim_lock():
-            now_call = time.time()
-            elapsed = now_call - last_nominatim_call
+            elapsed = time.time() - last_nominatim_call
             if elapsed < 1.0:
                 await asyncio.sleep(1.0 - elapsed)
             try:
-                # 3.5s timeout prevents Render server hanging when Nominatim throttles cloud IPs
-                async with httpx.AsyncClient(timeout=3.5) as client:
-                    r = await client.get(url, params=params, headers=headers)
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    t0 = time.perf_counter()
+                    r = await client.get(url_nom, params=params_nom, headers=NOMINATIM_HEADERS)
                     last_nominatim_call = time.time()
+                    elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
                     if r.status_code == 200:
                         data = r.json()
-            except Exception as e:
+                        logger.info(f"Nominatim reverse geocode OK ({lat}, {lon}) [{elapsed_ms}ms]")
+                    else:
+                        logger.warning(
+                            f"Nominatim reverse geocode returned HTTP {r.status_code} for ({lat}, {lon}) [{elapsed_ms}ms]"
+                        )
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
                 last_nominatim_call = time.time()
-                logger.warning(f"Reverse geocode upstream failed or timed out: {e}")
-    except Exception as e:
-        logger.warning(f"Nominatim lock error: {e}")
+                logger.warning(f"Nominatim reverse geocode network/timeout error for ({lat}, {lon}): {exc}")
+    except Exception as exc:
+        logger.warning(f"Nominatim lock or unexpected error: {exc}")
 
-    if not data:
-        fallback = {"city": None, "region": None, "country": None}
-        REVERSE_GEOCODE_CACHE[cache_key] = (now, fallback)
-        return fallback
-
-    address = data.get("address", {})
-    namedetails = data.get("namedetails", {})
+    city: Optional[str] = None
+    region: Optional[str] = None
+    country: Optional[str] = None
 
     def sanitize_en(val: Optional[str], fallback_en: Optional[str] = None) -> Optional[str]:
         candidate = fallback_en or val
         if not candidate:
             return None
+        candidate = candidate.strip()
         # If contains CJK characters, prioritize English/Latin namedetails
         if re.search(r'[\u4e00-\u9fff\u3040-\u30ff]', candidate):
             eng = (
-                namedetails.get("name:en")
-                or namedetails.get("_place_name:en")
-                or namedetails.get("int_name")
-                or namedetails.get("name:latin")
-                or namedetails.get("name:zh-Latn-pinyin")
+                (data.get("namedetails", {}).get("name:en") if data else None)
+                or (data.get("namedetails", {}).get("_place_name:en") if data else None)
+                or (data.get("namedetails", {}).get("int_name") if data else None)
+                or (data.get("namedetails", {}).get("name:latin") if data else None)
+                or (data.get("namedetails", {}).get("name:zh-Latn-pinyin") if data else None)
             )
             if eng and not re.search(r'[\u4e00-\u9fff]', eng):
                 return eng
-            # Remove any trailing non-ASCII
             cleaned = re.sub(r'[\u4e00-\u9fff\u3040-\u30ff\u0f00-\u0fff]', '', candidate).strip(' ,')
             return cleaned if cleaned else None
-        return candidate
+        return candidate if candidate else None
 
-    raw_city = (
-        namedetails.get("name:en")
-        or address.get("town")
-        or address.get("city")
-        or address.get("county")
-        or address.get("village")
-        or address.get("municipality")
-    )
-    city = sanitize_en(raw_city, namedetails.get("name:en"))
+    if data:
+        address = data.get("address", {})
+        namedetails = data.get("namedetails", {})
 
-    raw_region = namedetails.get("state:en") or namedetails.get("region:en") or address.get("state") or address.get("province") or address.get("region")
-    region = sanitize_en(raw_region, namedetails.get("state:en") or namedetails.get("region:en"))
+        raw_city = (
+            namedetails.get("name:en")
+            or address.get("city")
+            or address.get("town")
+            or address.get("municipality")
+            or address.get("state_district")
+            or address.get("district")
+            or address.get("county")
+            or address.get("suburb")
+            or address.get("village")
+        )
+        city = sanitize_en(raw_city, namedetails.get("name:en"))
 
-    raw_country = namedetails.get("country:en") or address.get("country")
-    country = sanitize_en(raw_country, namedetails.get("country:en"))
-    if not country and address.get("country_code") == "cn":
-        country = "China"
+        raw_region = (
+            namedetails.get("state:en")
+            or namedetails.get("region:en")
+            or address.get("state")
+            or address.get("province")
+            or address.get("region")
+        )
+        region = sanitize_en(raw_region, namedetails.get("state:en") or namedetails.get("region:en"))
 
-    res = {"city": city, "region": region, "country": country}
-    REVERSE_GEOCODE_CACHE[cache_key] = (now, res)
-    return res
+        raw_country = namedetails.get("country:en") or address.get("country")
+        country = sanitize_en(raw_country, namedetails.get("country:en"))
+        if not country and address.get("country_code") == "cn":
+            country = "China"
+
+    # --- 2. Fallback: BigDataCloud Reverse Geocoding if Nominatim failed or yielded all nulls ---
+    if not (city or region or country):
+        logger.info(f"Attempting BigDataCloud reverse geocode fallback for ({lat}, {lon})...")
+        url_bdc = "https://api.bigdatacloud.net/data/reverse-geocode-client"
+        params_bdc = {"latitude": lat, "longitude": lon, "localityLanguage": "en"}
+        try:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+                r_bdc = await client.get(url_bdc, params=params_bdc)
+                if r_bdc.status_code == 200:
+                    bdc_data = r_bdc.json()
+                    city = bdc_data.get("city") or bdc_data.get("locality") or city
+                    region = bdc_data.get("principalSubdivision") or region
+                    country = bdc_data.get("countryName") or country
+                    logger.info(f"BigDataCloud resolved ({lat}, {lon}) -> city={city}, region={region}, country={country}")
+        except Exception as exc:
+            logger.warning(f"BigDataCloud reverse geocode fallback error for ({lat}, {lon}): {exc}")
+
+    result = {
+        "city": city if city else None,
+        "region": region if region else None,
+        "country": country if country else None,
+    }
+
+    # CRITICAL: NEVER cache all-null or failure fallbacks!
+    # Cache only when at least one location attribute is successfully resolved.
+    if city or region or country:
+        REVERSE_GEOCODE_CACHE[cache_key] = (now, result)
+        logger.info(f"Cached valid reverse geocode for ({lat}, {lon}): {result}")
+    else:
+        logger.warning(f"Reverse geocode returned all-null for ({lat}, {lon}); NOT caching failure.")
+
+    return result
 
 
 @app.get("/api/reverse-geocode/{lat}/{lon}")
@@ -695,37 +770,80 @@ async def get_reverse_geocode(lat: float, lon: float):
 
 @app.get("/api/search")
 async def search_places(q: str = Query(..., min_length=1)):
+    """
+    Search places by name using OpenStreetMap Nominatim.
+    Preserves SearchResult schema expected by frontend/src/components/SearchBar.tsx.
+    Distinguishes legitimate empty results from upstream timeouts, rate limits, and server errors.
+    """
+    query = q.strip()
+    if not query:
+        return []
+
+    cache_key = query.lower()
+    now = time.time()
+    if cache_key in SEARCH_CACHE:
+        ts, cached_results = SEARCH_CACHE[cache_key]
+        if now - ts < CACHE_TTL_SEARCH_SECONDS:
+            logger.debug(f"Search cache HIT for '{query}' ({len(cached_results)} results)")
+            return cached_results
+
     global last_nominatim_call
     url = "https://nominatim.openstreetmap.org/search"
-    headers = {
-        "User-Agent": "AeroTrack/1.0 (air quality demo project)",
-        "Accept-Language": "en"
-    }
     params = {
-        "q": q,
+        "q": query,
         "format": "json",
         "accept-language": "en",
         "limit": 5,
         "addressdetails": 1,
     }
 
+    raw_results = None
     async with get_nominatim_lock():
-        now = time.time()
-        elapsed = now - last_nominatim_call
+        elapsed = time.time() - last_nominatim_call
         if elapsed < 1.0:
             await asyncio.sleep(1.0 - elapsed)
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get(url, params=params, headers=headers)
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.get(url, params=params, headers=NOMINATIM_HEADERS)
                 last_nominatim_call = time.time()
-                if res.status_code != 200:
-                    logger.error(f"Nominatim error {res.status_code}: {res.text}")
-                    return []
-                raw_results = res.json()
-        except Exception as e:
+
+                if res.status_code == 200:
+                    raw_results = res.json()
+                elif res.status_code == 429:
+                    logger.warning(f"Nominatim search 429 rate limit exceeded for query '{query}'")
+                    raise HTTPException(
+                        status_code=429,
+                        detail="Upstream place search rate limit exceeded. Please wait a moment before searching again."
+                    )
+                elif res.status_code >= 500:
+                    logger.error(f"Nominatim search HTTP {res.status_code} server error for query '{query}': {res.text}")
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Upstream place search service is temporarily unavailable."
+                    )
+                else:
+                    logger.error(f"Nominatim search unexpected HTTP {res.status_code} for query '{query}': {res.text}")
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Failed to query upstream place search service."
+                    )
+        except httpx.TimeoutException as exc:
             last_nominatim_call = time.time()
-            logger.error(f"Failed to query Nominatim: {e}")
-            return []
+            logger.warning(f"Nominatim search timed out for query '{query}': {exc}")
+            raise HTTPException(
+                status_code=504,
+                detail="Upstream place search service timed out. Please try again."
+            ) from exc
+        except httpx.RequestError as exc:
+            last_nominatim_call = time.time()
+            logger.error(f"Nominatim search connection error for query '{query}': {exc}")
+            raise HTTPException(
+                status_code=502,
+                detail="Upstream place search service connection failed."
+            ) from exc
+
+    if raw_results is None:
+        return []
 
     parsed_results = []
     for result in raw_results:
@@ -737,6 +855,9 @@ async def search_places(q: str = Query(..., min_length=1)):
             "longitude": float(result.get("lon", 0.0)),
             "type": result.get("type"),
         })
+
+    # Cache successful results (even legitimate empty results) for 10 minutes
+    SEARCH_CACHE[cache_key] = (now, parsed_results)
     return parsed_results
 
 
