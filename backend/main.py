@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException, Query
@@ -412,13 +413,23 @@ async def get_prediction(lat: float, lon: float):
         raise HTTPException(status_code=500, detail=f"Forecast training failed: {str(e)}")
 
 
-nominatim_lock = asyncio.Lock()
+nominatim_lock: Optional[asyncio.Lock] = None
 last_nominatim_call = 0.0
+
+
+def get_nominatim_lock() -> asyncio.Lock:
+    global nominatim_lock
+    if nominatim_lock is None:
+        nominatim_lock = asyncio.Lock()
+    return nominatim_lock
 
 
 async def reverse_geocode(lat: float, lon: float) -> dict:
     url = "https://nominatim.openstreetmap.org/reverse"
-    headers = {"User-Agent": "AeroTrack/1.0 (air quality demo project)"}
+    headers = {
+        "User-Agent": "AeroTrack/1.0 (air quality demo project)",
+        "Accept-Language": "en"
+    }
     params = {
         "lat": lat,
         "lon": lon,
@@ -426,16 +437,17 @@ async def reverse_geocode(lat: float, lon: float) -> dict:
         "accept-language": "en",
         "zoom": 10,
         "addressdetails": 1,
+        "namedetails": 1,
     }
     
     global last_nominatim_call
-    async with nominatim_lock:
+    async with get_nominatim_lock():
         now = time.time()
         elapsed = now - last_nominatim_call
         if elapsed < 1.0:
             await asyncio.sleep(1.0 - elapsed)
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 r = await client.get(url, params=params, headers=headers)
                 last_nominatim_call = time.time()
                 if r.status_code != 200:
@@ -447,16 +459,46 @@ async def reverse_geocode(lat: float, lon: float) -> dict:
             return {"city": None, "region": None, "country": None}
 
     address = data.get("address", {})
-    city = (
-        address.get("city")
+    namedetails = data.get("namedetails", {})
+
+    def sanitize_en(val: Optional[str], fallback_en: Optional[str] = None) -> Optional[str]:
+        candidate = fallback_en or val
+        if not candidate:
+            return None
+        # If contains CJK characters, prioritize English/Latin namedetails
+        if re.search(r'[\u4e00-\u9fff\u3040-\u30ff]', candidate):
+            eng = (
+                namedetails.get("name:en")
+                or namedetails.get("_place_name:en")
+                or namedetails.get("int_name")
+                or namedetails.get("name:latin")
+                or namedetails.get("name:zh-Latn-pinyin")
+            )
+            if eng and not re.search(r'[\u4e00-\u9fff]', eng):
+                return eng
+            # Remove any trailing non-ASCII
+            cleaned = re.sub(r'[\u4e00-\u9fff\u3040-\u30ff\u0f00-\u0fff]', '', candidate).strip(' ,')
+            return cleaned if cleaned else None
+        return candidate
+
+    raw_city = (
+        namedetails.get("name:en")
         or address.get("town")
+        or address.get("city")
+        or address.get("county")
         or address.get("village")
         or address.get("municipality")
-        or address.get("county")
     )
-    region = address.get("state") or address.get("province")
-    country = address.get("country")
-    
+    city = sanitize_en(raw_city, namedetails.get("name:en"))
+
+    raw_region = namedetails.get("state:en") or namedetails.get("region:en") or address.get("state") or address.get("province") or address.get("region")
+    region = sanitize_en(raw_region, namedetails.get("state:en") or namedetails.get("region:en"))
+
+    raw_country = namedetails.get("country:en") or address.get("country")
+    country = sanitize_en(raw_country, namedetails.get("country:en"))
+    if not country and address.get("country_code") == "cn":
+        country = "China"
+
     return {"city": city, "region": region, "country": country}
 
 
@@ -470,15 +512,19 @@ async def get_reverse_geocode(lat: float, lon: float):
 async def search_places(q: str = Query(..., min_length=1)):
     global last_nominatim_call
     url = "https://nominatim.openstreetmap.org/search"
-    headers = {"User-Agent": "AeroTrack/1.0 (air quality demo project)"}
+    headers = {
+        "User-Agent": "AeroTrack/1.0 (air quality demo project)",
+        "Accept-Language": "en"
+    }
     params = {
         "q": q,
         "format": "json",
+        "accept-language": "en",
         "limit": 5,
         "addressdetails": 1,
     }
 
-    async with nominatim_lock:
+    async with get_nominatim_lock():
         now = time.time()
         elapsed = now - last_nominatim_call
         if elapsed < 1.0:
