@@ -12,6 +12,7 @@ interface AirMapProps {
   onSelect: (lat: number, lon: number, displayName?: string) => void;
   aqiInfo?: AQIInfo;
   aqiValue?: number | null;
+  isLoading?: boolean;
 }
 
 // Custom pulsing Leaflet marker icon using SVG to avoid missing asset paths
@@ -78,8 +79,10 @@ export const AirMap: React.FC<AirMapProps> = ({
   onSelect,
   aqiInfo,
   aqiValue,
+  isLoading = false,
 }) => {
-  const markerColor = aqiInfo?.color || '#06b6d4';
+  const isCalculating = isLoading || aqiValue == null;
+  const markerColor = isCalculating ? '#06b6d4' : (aqiInfo?.color || '#06b6d4');
   const customIcon = createCustomMarker(markerColor);
   const markerRef = useRef<L.Marker>(null);
 
@@ -111,7 +114,7 @@ export const AirMap: React.FC<AirMapProps> = ({
         <MapViewController lat={lat} lon={lon} />
         <Marker ref={markerRef} position={[lat, lon]} icon={customIcon}>
           <Popup>
-            <div className="p-1 space-y-1 text-slate-200">
+            <div className="p-1 space-y-1.5 text-slate-200 min-w-[170px]">
               <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-100">
                 <MapPin className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0" />
                 <span className="truncate max-w-[200px]">
@@ -122,18 +125,38 @@ export const AirMap: React.FC<AirMapProps> = ({
                 <Navigation className="w-3 h-3 text-cyan-500 flex-shrink-0" />
                 <span>{lat.toFixed(4)}, {lon.toFixed(4)}</span>
               </div>
-              <div className="text-sm font-semibold flex items-center gap-2">
-                <span>AQI:</span>
-                <span
-                  className="px-2 py-0.5 rounded text-xs font-bold text-white"
-                  style={{ backgroundColor: aqiInfo?.color || '#6b7280' }}
-                >
-                  {aqiValue ?? 'N/A'} - {aqiInfo?.category || 'Calculating'}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 max-w-[200px] leading-tight">
-                {aqiInfo?.description}
-              </p>
+
+              {isCalculating ? (
+                <div className="space-y-1 pt-0.5">
+                  <div className="text-sm font-semibold flex items-center gap-2">
+                    <span className="text-slate-300">AQI:</span>
+                    <span className="px-2 py-0.5 rounded text-xs font-bold text-cyan-300 bg-cyan-950/90 border border-cyan-500/40 animate-pulse">
+                      Calculating...
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-cyan-400/90 leading-tight flex items-center gap-1">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping flex-shrink-0" />
+                    Measuring real-time sensors...
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1 pt-0.5">
+                  <div className="text-sm font-semibold flex items-center gap-2">
+                    <span>AQI:</span>
+                    <span
+                      className="px-2 py-0.5 rounded text-xs font-bold text-white shadow-sm"
+                      style={{ backgroundColor: aqiInfo?.color || '#06b6d4' }}
+                    >
+                      {aqiValue} - {aqiInfo?.category || 'Moderate'}
+                    </span>
+                  </div>
+                  {aqiInfo?.description && (
+                    <p className="text-[11px] text-slate-300 max-w-[200px] leading-tight">
+                      {aqiInfo.description}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </Popup>
         </Marker>

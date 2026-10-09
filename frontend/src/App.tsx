@@ -59,6 +59,10 @@ export const App: React.FC = () => {
 
   // Fetch all 3 endpoints concurrently with independent state updates for instant rendering
   const fetchAllData = useCallback(async (targetLat: number, targetLon: number) => {
+    // Immediately clear previous location data so old AQI never hovers or flashes on the new location
+    setAirQuality(null);
+    setTrends(null);
+    setForecast(null);
     setIsAirQualityLoading(true);
     setIsTrendsLoading(true);
     setIsForecastLoading(true);
@@ -121,11 +125,21 @@ export const App: React.FC = () => {
 
   // Handle location update with optional displayName
   const handleSelect = (newLat: number, newLon: number, displayName?: string) => {
-    setLat(newLat);
-    setLon(newLon);
+    const isNewCoords = Math.abs(newLat - lat) > 1e-4 || Math.abs(newLon - lon) > 1e-4;
+    if (isNewCoords) {
+      // Immediately reset previous readings so new click always calculates and shows freshly
+      setAirQuality(null);
+      setTrends(null);
+      setForecast(null);
+      setIsAirQualityLoading(true);
+      setIsTrendsLoading(true);
+      setIsForecastLoading(true);
+      setLat(newLat);
+      setLon(newLon);
+    }
     if (displayName) {
       setLocationName(displayName);
-    } else {
+    } else if (isNewCoords) {
       setLocationName(`${newLat.toFixed(3)}°, ${newLon.toFixed(3)}°`);
     }
   };
@@ -284,6 +298,7 @@ export const App: React.FC = () => {
               onSelect={handleSelectLocation}
               aqiInfo={airQuality?.aqi_info}
               aqiValue={airQuality?.us_aqi}
+              isLoading={isAirQualityLoading}
             />
           </div>
 
