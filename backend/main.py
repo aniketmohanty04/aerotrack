@@ -38,12 +38,19 @@ def read_root():
         "docs": "/docs",
         "frontend": "http://localhost:5173",
         "endpoints": {
+            "health": "/api/health",
             "air_quality": "/api/air-quality/{lat}/{lon}",
             "trends": "/api/trends/{lat}/{lon}",
             "predict": "/api/predict/{lat}/{lon}",
-            "search": "/api/search?q={query}"
+            "search": "/api/search?q={query}",
+            "reverse_geocode": "/api/reverse-geocode/{lat}/{lon}"
         }
     }
+
+
+@app.api_route("/api/health", methods=["GET", "HEAD"])
+def health_check():
+    return {"status": "ok", "service": "aerotrack-backend"}
 
 
 def validate_coords(lat: float, lon: float) -> tuple[float, float]:

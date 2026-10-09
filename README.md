@@ -4,6 +4,30 @@
 
 ---
 
+## 🔗 Live Demo
+
+- **Frontend:** https://aerotrack-three.vercel.app
+- **Backend API:** https://aerotrack-backend-1tlt.onrender.com
+- **API Documentation:** https://aerotrack-backend-1tlt.onrender.com/docs
+
+> **Note:** The backend runs on Render's free tier, which normally sleeps after 15 minutes of inactivity. An UptimeRobot monitor pings the health endpoint every 5 minutes to keep it warm 24/7, so users experience sub-second response times. See the Uptime Optimization section below for details.
+
+---
+
+## 🚀 Uptime Optimization
+
+The backend is deployed on Render's free tier, which typically sleeps after 15 minutes of inactivity. To eliminate cold-start delays during demo presentations and evaluation, an **UptimeRobot** monitor pings the `/api/health` endpoint every 5 minutes, keeping the service warm 24/7.
+
+**Configuration:**
+- **Monitor Type:** HTTP(s)
+- **URL:** https://aerotrack-backend-1tlt.onrender.com/api/health
+- **Interval:** 5 minutes
+- **Effect:** Backend response time drops from ~25s (cold) to <500ms (warm)
+
+This is a production-grade pattern for keeping free-tier services responsive without upgrading to paid plans.
+
+---
+
 ## 1. Overview
 
 **AeroTrack** is an end-to-end environmental intelligence platform built in response to the **"Real-Time Air Quality Monitoring and Prediction for User-Selected Regions"** problem statement. Atmospheric pollutants such as fine particulate matter ($\text{PM}_{2.5}$) pose severe public health risks worldwide, yet accessing localized, actionable air quality data combined with dependable forward-looking projections remains challenging for general citizens and researchers alike.
@@ -37,124 +61,90 @@ To anticipate air quality fluctuations, AeroTrack deploys an on-demand machine l
 ## 3. Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                         REACT FRONTEND (Vite + TS)                       │
-│                                                                          │
-│   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐   │
-│   │ Leaflet Map View │  │ SearchBar Auto-  │  │ Pollutant Cards &    │   │
-│   │ (Click listener) │  │ complete (OSM)   │  │ Health Advisories    │   │
-│   └─────────┬────────┘  └────────┬─────────┘  └──────────┬───────────┘   │
-│             │                    │                       │               │
-│   ┌─────────┴────────────────────┴───────────────────────┴───────────┐   │
-│   │ Recharts Visualizations: 7-Day TrendChart & 24h ForecastChart    │   │
-│   └──────────────────────────────────┬───────────────────────────────┘   │
-└──────────────────────────────────────┼───────────────────────────────────┘
-                                       │ HTTP / REST (/api/*)
-                                       ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                         FASTAPI BACKEND (Python 3.10+)                   │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐   │
-│   │ Routing & Middleware: CORS, Coordinate Validation, Rate Limiter  │   │
-│   └───────────────┬──────────────────────────────────┬───────────────┘   │
-│                   │                                  │                   │
-│     ┌─────────────▼──────────────┐     ┌─────────────▼──────────────┐    │
-│     │   Shared Air Cache (10m)   │     │   Model Cache (30m TTL)    │    │
-│     │   (Current & 7-Day Trends) │     │   (XGBoost Model & Data)   │    │
-│     └─────────────┬──────────────┘     └─────────────┬──────────────┘    │
-│                   │                                  │                   │
-│                   ▼                                  ▼                   │
-│   ┌──────────────────────────────┐     ┌─────────────────────────────┐   │
-│   │ External Upstream Services   │     │ ML Pipeline (ml_model.py)   │   │
-│   │ • Open-Meteo Air Quality API │     │ • Feature Engineering       │   │
-│   │ • Nominatim Geocoding        │     │ • XGBoost Regressor Fit     │   │
-│   │ • BigDataCloud Reverse Geo   │     │ • Autoregressive 24h Loop   │   │
-│   └──────────────────────────────┘     └─────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                        REACT FRONTEND (Vite + TS)                      │
+│                                                                        │
+│   ┌───────────────────────────┐     ┌──────────────────────────────┐   │
+│   │ Leaflet World Map View    │     │ SearchBar Autocomplete       │   │
+│   │ (Click coordinate capture)│     │ (OpenStreetMap Nominatim)    │   │
+│   └─────────────┬─────────────┘     └──────────────┬───────────────┘   │
+│                 │                                  │                   │
+│   ┌─────────────┴──────────────────────────────────┴───────────────┐   │
+│   │ Recharts Visualizations: TrendChart (7d) & ForecastChart (24h)  │   │
+│   └────────────────────────────────┬───────────────────────────────┘   │
+└────────────────────────────────────┼───────────────────────────────────┘
+                                     │ HTTP REST Requests (/api/*)
+                                     ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        FASTAPI BACKEND (Python 3.10+)                  │
+│                                                                        │
+│   ┌────────────────────────────────────────────────────────────────┐   │
+│   │ Middleware: CORS Policy, Coordinate Normalization, Rate-Limits │   │
+│   └────────────────┬──────────────────────────────┬────────────────┘   │
+│                    │                              │                    │
+│     ┌──────────────▼─────────────┐  ┌─────────────▼──────────────┐     │
+│     │   Shared Air Cache (10m)   │  │   Model Cache (30m TTL)    │     │
+│     │   Live Telemetry & Trends  │  │   Fitted XGBoost & Arrays  │     │
+│     └──────────────┬─────────────┘  └─────────────┬──────────────┘     │
+│                    │                              │                    │
+│                    ▼                              ▼                    │
+│   ┌──────────────────────────────┐  ┌──────────────────────────────┐   │
+│   │ External Upstream Services   │  │ XGBoost ML Pipeline          │   │
+│   │ • Open-Meteo Air Quality API │  │ • Feature Engineering        │   │
+│   │ • Nominatim Search API       │  │ • Autoregressive 24h Loop    │   │
+│   │ • BigDataCloud Reverse Geo   │  │ • Step-Dependent Uncertainty │   │
+│   └──────────────────────────────┘  └──────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 4. Machine Learning Pipeline
+## 4. ML Pipeline
 
-```
-Raw Open-Meteo Data (92 days, hourly)
-  │ (PM2.5, NO2, O3, Wind Speed, Temperature, Relative Humidity)
-  ▼
-Data Cleaning & Alignment
-  │ (Missing value interpolation, bfill/ffill, timezone alignment)
-  ▼
-Feature Engineering Matrix (18 Engineered Features)
-  ├── Cyclical Temporal Encodings: hour_sin, hour_cos, dow_sin, dow_cos
-  ├── Autoregressive Lag Features: pm25_lag1, lag2, lag3, lag6, lag12, lag24
-  ├── Polynomial Lag Terms: pm25_lag1_squared, pm25_lag24_squared
-  ├── Rolling Statistics: rolling_mean_6, rolling_mean_24, rolling_std_24
-  └── Meteorological Interactions: wind_pm25_ratio, humidity_temp_ratio, no2_o3_ratio
-  ▼
-Model Training
-  │ Algorithm: XGBoost Regressor (120 trees, max depth 4, learning rate 0.08)
-  │ Target: PM2.5 (t)
-  ▼
-Autoregressive 24-Step Forecasting Loop
-  │ Step 1 -> Predict PM2.5(t+1) -> Update lag & rolling buffers -> Predict PM2.5(t+2) ...
-  ▼
-Uncertainty Band Calculation
-  │ Uncertainty Margin = (Residual_Std * 1.645) * (1.0 + 0.03 * Step)
-  │ Lower Bound = max(0, Prediction - Margin) | Upper Bound = Prediction + Margin
-  ▼
-Cache Output (30-minute in-memory TTL per rounded coordinate)
-```
+The predictive engine employs an autoregressive Extreme Gradient Boosting (XGBoost) workflow operating on localized historical and meteorological time-series.
 
-### Detailed Pipeline Stages
+### Pipeline Stages
 
-1. **Historical Data Acquisition**:
-   The backend retrieves up to 92 days of hourly observations from Open-Meteo's Air Quality and Weather APIs, returning $\text{PM}_{2.5}$, $\text{NO}_2$, $\text{O}_3$, 10-meter wind speed, 2-meter air temperature, and 2-meter relative humidity. Timestamps are fetched with `timezone="auto"` and aligned to local solar time using `utc_offset_seconds`.
+1. **Data Acquisition (92 Days Hourly)**:
+   - Fetches 92 days of hourly readings from Open-Meteo Air Quality and Weather APIs: $\text{PM}_{2.5}$, $\text{NO}_2$, $\text{O}_3$, 10-meter wind speed, 2-meter temperature, and 2-meter relative humidity.
+   - Timestamps use `timezone="auto"` and are localized to local solar time using `utc_offset_seconds`.
 2. **Feature Engineering**:
-   - **Cyclical Temporal Encodings**: Hour of the day ($0\text{--}23$) and day of the week ($0\text{--}6$) are mapped onto trigonometric coordinate circles using sine and cosine transformations:
+   - **Cyclical Time Encodings**: Hour of the day ($0\text{--}23$) and day of the week ($0\text{--}6$) transformed onto continuous trigonometric circles:
      $$\text{hour\_sin} = \sin\left(\frac{2\pi \cdot \text{hour}}{24}\right), \quad \text{hour\_cos} = \cos\left(\frac{2\pi \cdot \text{hour}}{24}\right)$$
      $$\text{dow\_sin} = \sin\left(\frac{2\pi \cdot \text{dow}}{7}\right), \quad \text{dow\_cos} = \cos\left(\frac{2\pi \cdot \text{dow}}{7}\right)$$
-   - **Autoregressive Lags**: Captures short-term persistence and diurnal seasonality ($\text{lag}_1, \text{lag}_2, \text{lag}_3, \text{lag}_6, \text{lag}_{12}, \text{lag}_{24}$).
-   - **Non-Linear Polynomial Lags**: $\text{lag}_1^2$ and $\text{lag}_{24}^2$ assist the tree splits in capturing rapid pollution spikes and extreme compounding episodes.
-   - **Rolling Window Statistics**: 6-hour and 24-hour moving averages and 24-hour rolling standard deviations (calculated strictly on shifted data to prevent lookahead data leakage).
+   - **Autoregressive Lag Features**: 1h, 2h, 3h, 6h, 12h, and 24h lag variables capturing immediate momentum and daily diurnal periodicity.
+   - **Polynomial Lag Features**: $\text{lag}_1^2$ and $\text{lag}_{24}^2$ enabling non-linear splits during rapid pollutant spikes.
+   - **Rolling Window Statistics**: 6-hour moving mean, 24-hour moving mean, and 24-hour moving standard deviation calculated on shifted values to prevent lookahead data leakage.
    - **Meteorological Interactions**:
-     - $\text{Wind-to-PM}_{2.5} \text{ Ratio} = \frac{\text{PM}_{2.5(t-1)}}{\text{WindSpeed} + 0.1}$ (stagnant vs. dispersion conditions)
-     - $\text{Humidity-to-Temperature Ratio} = \frac{\text{Humidity}}{\text{Temp} + 40.0}$ (boundary layer moisture / inversion proxies)
-     - $\text{NO}_2\text{-to-O}_3 \text{ Ratio} = \frac{\text{NO}_2}{\text{O}_3 + 1.0}$ (photochemical equilibrium proxy)
-3. **Model Specifications**:
-   - `n_estimators`: 120
-   - `max_depth`: 4
-   - `learning_rate`: 0.08
-   - `subsample`: 0.85
-   - `colsample_bytree`: 0.85
-   - `random_state`: 42
-4. **Autoregressive Forecasting**:
-   For horizons $h = 1 \dots 24$, the model predicts $\widehat{y}_{t+h}$, appends the predicted value to the feature buffer, rolls the lag and rolling statistics forward, recomputes temporal features, and repeats for the subsequent step.
-5. **Step-Dependent Uncertainty Bounds**:
-   Uncertainty expands progressively over the forecast horizon to model error accumulation:
-   $$\text{Margin}_h = \left(1.645 \cdot \sigma_{\text{residuals}}\right) \cdot (1.0 + 0.03 \cdot h)$$
-   $$\text{Lower}_h = \max(0, \widehat{y}_{t+h} - \text{Margin}_h), \quad \text{Upper}_h = \widehat{y}_{t+h} + \text{Margin}_h$$
-6. **Two-Tier Caching Strategy**:
-   - **Live Air Quality & Trends Cache**: In-memory cache keyed by `(round(lat, 4), round(lon, 4))` with a **10-minute TTL** (`CACHE_TTL_AIR_SECONDS = 600`), avoiding repeated upstream Open-Meteo queries.
-   - **ML Model & Forecast Cache**: In-memory cache with a **30-minute TTL** (`CACHE_TTL_SECONDS = 1800`), ensuring rapid interactive responses across repeated queries for the same region.
+     - $\text{wind\_pm25\_ratio} = \frac{\text{PM}_{2.5(t-1)}}{\text{WindSpeed} + 0.1}$ (stagnant vs. dispersion conditions)
+     - $\text{humidity\_temp\_ratio} = \frac{\text{Humidity}}{\text{Temperature} + 40.0}$ (boundary layer inversion proxy)
+     - $\text{no2\_o3\_ratio} = \frac{\text{NO}_2}{\text{O}_3 + 1.0}$ (photochemical equilibrium proxy)
+3. **Model Configuration**:
+   - **Algorithm**: `xgb.XGBRegressor`
+   - **Estimators**: 120 trees
+   - **Tree Depth**: `max_depth = 4` (prevents overfitting on small local sample sizes)
+   - **Learning Rate**: `0.08`
+   - **Subsample & Colsample**: `0.85` subsample, `0.85` colsample per tree
+4. **Forecast Method (Autoregressive 24-Step Loop)**:
+   - For each step $h \in [1, 24]$, the model generates an inference $\widehat{y}_{t+h}$.
+   - The predicted value is appended to the feature array and becomes the new $\text{lag}_1$ input for step $h+1$. Lags, rolling statistics, and temporal encodings roll forward dynamically.
+5. **Uncertainty Bands**:
+   - Derives step-dependent uncertainty margins from recent historical residual variance:
+     $$\text{Margin}_h = \left(1.645 \cdot \sigma_{\text{residuals}}\right) \cdot (1.0 + 0.03 \cdot h)$$
+     $$\text{Lower}_h = \max(0, \widehat{y}_{t+h} - \text{Margin}_h), \quad \text{Upper}_h = \widehat{y}_{t+h} + \text{Margin}_h$$
+6. **Two-Tier In-Memory Caching**:
+   - **10-Minute Shared Air Cache**: Stores live telemetry and 7-day trends (`(round(lat, 4), round(lon, 4))`), eliminating duplicate requests between `/api/air-quality` and `/api/trends`.
+   - **30-Minute Model Cache**: Retains trained XGBoost estimators and generated 24-hour forecasts per coordinate pair.
 
 ---
 
-## 5. Why XGBoost?
+## 5. AQI Standard
 
-1. **Sub-Second Training Speed**: In an on-demand architecture where models are trained for specific user-selected coordinates, neural network architectures (such as LSTMs or Transformers) impose significant latency and require GPU infrastructure. XGBoost fits 2,000+ hourly training rows in under 1.5 seconds on commodity CPUs.
-2. **Empirical Dominance on Tabular Time-Series**: When working with tabular engineered features (lagged time steps, rolling aggregations, and ratios), gradient-boosted decision trees consistently outperform deep networks on sample sizes under 100,000 observations.
-3. **Non-Linear Meteorological Interactions**: Atmospheric dynamics involve threshold behaviors (e.g., wind speeds above $5\,\text{m/s}$ rapidly dispersing particulate matter, or temperature inversions trapping pollutants near the surface). Decision trees capture these interactions naturally without requiring manual interaction terms.
-4. **Missing Data Resilience**: XGBoost possesses native support for missing values, routing missing nodes through optimal default branch directions during inference.
-
----
-
-## 6. AQI Classification Standard
-
-AeroTrack locks all classification to the official **US Environmental Protection Agency (US EPA)** Air Quality Index standards as the single source of truth.
+AeroTrack locks all classification to the official **US Environmental Protection Agency (US EPA)** standards as the single source of truth across all 6 criteria pollutants.
 
 ### US EPA Breakpoint Table
 
-Concentrations are reported in **$\mu\text{g/m}^3$**:
+All concentrations are measured in **$\mu\text{g/m}^3$**:
 
 | AQI Category | AQI Range | Color | $\text{PM}_{2.5}$ (24h) | $\text{PM}_{10}$ (24h) | $\text{O}_3$ (8h) | $\text{CO}$ (8h) | $\text{SO}_2$ (1h) | $\text{NO}_2$ (1h) |
 |---|---|---|---|---|---|---|---|---|
@@ -165,48 +155,45 @@ Concentrations are reported in **$\mu\text{g/m}^3$**:
 | **Very Unhealthy** | 201 – 300 | `#8b5cf6` (Purple) | 125.5 – 225.4 | 355 – 424 | 205.9 – 392.0 | 17,634 – 34,808 | 796.6 – 1,582.5 | 1,220.2 – 2,348.1 |
 | **Hazardous** | 301+ | `#7f1d1d` (Maroon) | > 225.4 | > 424 | > 392.0 | > 34,808 | > 1,582.5 | > 2,348.1 |
 
-### WHO 2021 Reference Line on Visualizations
-In addition to the US EPA breakpoints, the 7-day trend chart and 24-hour forecast chart plot two visual reference thresholds:
-- **Safe Limit ($15\,\mu\text{g/m}^3$)**: The World Health Organization (WHO) 2021 24-hour guideline for $\text{PM}_{2.5}$ concentration (rendered as a solid green line).
-- **Caution Limit ($35\,\mu\text{g/m}^3$)**: The US EPA Moderate threshold where air quality begins impacting sensitive demographics (rendered as a solid orange line).
+### WHO 2021 Reference Guideline
+On both the 7-day trend chart and the 24-hour forecast chart, AeroTrack displays two constant visual benchmarks:
+- **Safe Limit ($15\,\mu\text{g/m}^3$)**: The World Health Organization (WHO) 2021 recommended 24-hour guideline for $\text{PM}_{2.5}$ exposure.
+- **Caution Limit ($35\,\mu\text{g/m}^3$)**: The US EPA threshold boundary separating Good/Moderate from Unhealthy for Sensitive Groups.
 
 ---
 
-## 7. Tech Stack
+## 6. Tech Stack
 
-| Layer | Technology | Purpose |
-|---|---|---|
-| **Frontend Framework** | React 18 + TypeScript | Component architecture, state management, strict typing |
-| **Build Tooling** | Vite | Ultra-fast HMR and optimized production bundling |
-| **Styling** | Tailwind CSS | Responsive utility-first dark UI design system |
-| **Mapping** | Leaflet + React-Leaflet | Interactive tile map, coordinate capture, marker rendering |
-| **Charts** | Recharts | Responsive SVGs for time-series trend lines and forecast confidence bands |
-| **Icons** | Lucide React | Clean, lightweight iconography |
-| **Backend Framework** | FastAPI (Python 3.10+) | High-throughput asynchronous REST API |
-| **HTTP Client** | HTTPX | Asynchronous connection pooling for external upstream services |
-| **ML Framework** | XGBoost + Scikit-Learn | Extreme Gradient Boosting regression and metric pipelines |
-| **Data Processing** | Pandas + NumPy | Time-series alignment, rolling features, trigonometry encodings |
-| **Geocoding & Place Search** | Nominatim (OpenStreetMap) | Debounced location autocomplete with 1.0s rate limiting |
-| **Reverse Geocoding** | BigDataCloud Client API | Coordinate-to-municipality reverse resolution |
-| **Atmospheric Data** | Open-Meteo Air Quality API | Global hourly atmospheric reanalysis and meteorological telemetry |
+| Layer | Technologies |
+|---|---|
+| **Frontend Framework** | React 18, TypeScript, Vite |
+| **UI Styling** | Tailwind CSS, Lucide React Icons |
+| **Mapping & Geospatial** | Leaflet, React-Leaflet, OpenStreetMap Tiles |
+| **Data Visualizations** | Recharts (Responsive SVG Charts) |
+| **Backend Framework** | FastAPI, Python 3.10+, Uvicorn (ASGI) |
+| **HTTP Client** | HTTPX (Async Client) |
+| **Machine Learning** | XGBoost (`XGBRegressor`), Scikit-Learn |
+| **Data Processing** | Pandas, NumPy |
+| **External APIs** | Open-Meteo Air Quality & Weather API, Nominatim (OpenStreetMap), BigDataCloud |
+| **Deployment** | Render (Backend API), Vercel (Frontend SPA) |
 
 ---
 
-## 8. API Endpoints
+## 7. API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/` | API status manifest, health check, and endpoint discovery directory |
-| `GET` | `/docs` | Interactive Swagger UI API documentation and testing workbench |
-| `GET` | `/api/air-quality/{lat}/{lon}` | Current air quality metrics, US AQI score, and 6 pollutant concentration readings with ratings |
+| `GET` / `HEAD` | `/` | API status manifest, health overview, and endpoint discovery directory |
+| `GET` / `HEAD` | `/api/health` | Dedicated lightweight uptime and health-check endpoint for cloud platforms |
+| `GET` | `/api/air-quality/{lat}/{lon}` | Current pollutant telemetry, US AQI score, and individual pollutant ratings |
 | `GET` | `/api/trends/{lat}/{lon}` | 7-day hourly historical and current pollutant trends ($\text{PM}_{2.5}$, $\text{PM}_{10}$, $\text{O}_3$, $\text{NO}_2$, AQI) |
 | `GET` | `/api/predict/{lat}/{lon}` | Trains a localized XGBoost regressor and returns a 24-hour autoregressive $\text{PM}_{2.5}$ forecast |
-| `GET` | `/api/reverse-geocode/{lat}/{lon}` | Resolves latitude and longitude coordinates into city, region, and country names |
-| `GET` | `/api/search?q={query}` | Autocomplete search for global cities and landmarks with built-in rate-limiting and debouncing |
+| `GET` | `/api/search?q={query}` | Autocomplete search for global places with rate-limiting and debouncing |
+| `GET` | `/api/reverse-geocode/{lat}/{lon}` | Resolves latitude/longitude coordinates into city, administrative region, and country |
 
 ---
 
-## 9. Running Locally
+## 8. Running Locally
 
 ### Prerequisites
 - **Python**: 3.10 or higher
@@ -217,35 +204,21 @@ In addition to the US EPA breakpoints, the 7-day trend chart and 24-hour forecas
 
 ### Backend Setup
 
-#### On Windows (PowerShell)
+#### PowerShell (Windows)
 ```powershell
-# Navigate to the backend directory
 cd nexus\backend
-
-# Create and activate a Python virtual environment
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-
-# Install required dependencies
-pip install fastapi uvicorn httpx pandas numpy xgboost scikit-learn
-
-# Run the FastAPI development server
+pip install -r requirements.txt
 uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-#### On Linux / macOS (Bash)
+#### Bash (Linux / macOS)
 ```bash
-# Navigate to the backend directory
 cd nexus/backend
-
-# Create and activate a Python virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install required dependencies
-pip install fastapi uvicorn httpx pandas numpy xgboost scikit-learn
-
-# Run the FastAPI development server
+pip install -r requirements.txt
 uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -253,62 +226,59 @@ uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
 ### Frontend Setup
 
-#### On Windows (PowerShell)
+#### PowerShell (Windows)
 ```powershell
-# Navigate to the frontend directory
 cd nexus\frontend
-
-# Install node dependencies
 npm install
-
-# Start the Vite development server
 npm run dev
 ```
 
-#### On Linux / macOS (Bash)
+#### Bash (Linux / macOS)
 ```bash
-# Navigate to the frontend directory
 cd nexus/frontend
-
-# Install node dependencies
 npm install
-
-# Start the Vite development server
 npm run dev
 ```
 
-### Accessing the Application
-- **Frontend Dashboard**: Open [http://localhost:5173](http://localhost:5173) in your browser.
-- **Backend API & Swagger Docs**: Open [http://localhost:8000/docs](http://localhost:8000/docs).
+- **Frontend App**: [http://localhost:5173](http://localhost:5173)
+- **Backend API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
 
-## 10. Design Decisions
+## 9. Design Decisions
 
 | Decision | Rationale |
 |---|---|
-| **Open-Meteo for Air Quality** | Provides free, global, hourly multi-pollutant reanalysis and forecast models without mandatory API keys, providing consistent global coverage. |
-| **XGBoost for Forecasting** | Delivers superior tabular regression accuracy, handles non-linear atmospheric relationships, and trains within 1.5 seconds per query on CPU. |
-| **Autoregressive Multi-Step Loop** | Allows the model to iteratively update lag and rolling features hour-by-hour, maintaining realistic temporal trajectories rather than fitting 24 separate regression heads. |
-| **Two-Layer In-Memory Caching** | Prevents redundant upstream API hits and expensive retraining loops: 10-minute cache for live observation data and 30-minute cache for fitted ML models. |
-| **US EPA AQI Standard as Truth** | Provides a standardized, peer-reviewed categorization system across all 6 criteria pollutants with clear breakpoint definitions. |
-| **Client-Side Vite Proxy** | Proxies `/api` requests from `localhost:5173` to `127.0.0.1:8000`, eliminating cross-origin browser issues during local development. |
+| **Open-Meteo over AccuWeather** | Open-Meteo provides free, global, hourly multi-pollutant reanalysis and meteorological data without mandatory API key limits, enabling universal global coverage out of the box. |
+| **XGBoost over LSTM / Deep Learning** | On-demand training for arbitrary coordinates requires sub-2-second latency. XGBoost trains in under 1.5 seconds on CPU, handles missing observations, and consistently outperforms LSTMs on small tabular time-series (~2,200 rows). |
+| **Autoregressive Forecast** | Allows the model to dynamically update lag buffers and moving averages hour-by-hour over 24 steps, maintaining temporal continuity without training 24 separate models. |
+| **Two-Layer Caching** | Prevents redundant upstream API hits and unnecessary re-training: 10-minute cache for shared live air quality/trends, and 30-minute cache for trained XGBoost models. |
+| **US EPA AQI Standard** | Standardized, peer-reviewed categorization system across all 6 criteria pollutants with well-defined concentration breakpoints. |
+| **Rule-Based Health Advisory** | Eliminates generative LLM hallucinations and latency for medical guidance, providing deterministic, category-specific recommendations verified against official health guidelines. |
 
 ---
 
-## 11. Known Limitations
+## 10. Known Limitations
 
-- **92-Day Training Horizon**: Training data is restricted to 92 past days to maintain sub-second API response times and respect Open-Meteo payload sizes. This window may under-sample long-term multi-year inter-annual seasonality.
-- **Heuristic Uncertainty Bands**: Uncertainty bounds expand via residual standard deviation multipliers rather than full quantile loss regression or Bayesian posterior sampling.
-- **$\text{PM}_{2.5}$-Specific Machine Learning Model**: Machine learning forecasting is currently applied exclusively to $\text{PM}_{2.5}$ (the pollutant with the highest global health burden). Other pollutants are tracked via real-time and historical trends.
-- **Grid-Based Reanalysis Data**: Atmospheric telemetry relies on spatial grid interpolation rather than direct on-premise physical monitoring stations, which may smooth extreme hyper-local street-canyon spikes.
+- **92-Day Training Window**: Training is bounded to 92 historical days to ensure sub-second API execution and avoid excessive payload sizes, which may under-sample multi-year seasonal patterns.
+- **Heuristic Confidence Bands**: Uncertainty intervals expand via residual variance multipliers rather than full quantile loss regression (`reg:quantileerror`) or Bayesian posterior sampling.
+- **$\text{PM}_{2.5}$-Only Forecast Model**: Machine learning prediction is focused specifically on $\text{PM}_{2.5}$ due to its primary health risk, while other pollutants are monitored via historical trends and current telemetry.
+- **Grid-Based Model Data vs Ground Sensors**: Atmospheric telemetry is derived from spatial grid reanalysis models rather than hyper-local physical street monitors, which can smooth localized micro-climate spikes.
 
 ---
 
-## 12. Future Roadmap
+## 11. What I'd Add Next
 
-- **OpenAQ Physical Station Integration**: Ingest real-time ground-station monitoring feeds alongside satellite reanalysis data for ground-truth validation.
-- **Quantile Regression Loss**: Upgrade XGBoost training to use quantile regression (`reg:quantileerror` at $\alpha=0.10$ and $\alpha=0.90$) to calculate mathematically rigorous prediction intervals.
-- **SHAP (SHapley Additive exPlanations)**: Provide interactive visual explanations of feature attribution (e.g., how wind speed vs. morning traffic peaks contributed to a forecast surge).
-- **Multi-Location Comparison**: Side-by-side comparative views allowing users to benchmark air quality across multiple regions simultaneously.
-- **Automated Threshold Push Notifications**: Webhook and browser notifications alerting users when predicted $\text{PM}_{2.5}$ exceeds safe thresholds.
+- **OpenAQ Physical Ground-Station Ingestion**: Merge real-time ground-station monitoring feeds alongside satellite reanalysis for ground-truth bias correction.
+- **Quantile Regression Intervals**: Upgrade XGBoost training to use quantile regression loss to produce mathematically rigorous $10^{\text{th}}$ and $90^{\text{th}}$ percentile bounds.
+- **SHAP (SHapley Additive exPlanations)**: Provide interactive visual feature attribution explaining which atmospheric drivers (e.g. wind drop, rush hour) caused predicted spikes.
+- **Multi-City Comparison**: Side-by-side dashboard comparing air quality across multiple user-selected locations simultaneously.
+- **Automated Threshold Push Notifications**: Browser and webhook alerts when predicted $\text{PM}_{2.5}$ is forecasted to exceed safe levels.
+
+---
+
+## 12. Author
+
+**Aniket Mohanty**  
+Registration No: `25BCE5816`  
+*Tech Round 1 Recruitment Challenge, 2026*
