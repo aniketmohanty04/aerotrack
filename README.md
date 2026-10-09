@@ -10,7 +10,7 @@
 - **Backend API:** https://aerotrack-backend-1tlt.onrender.com
 - **API Documentation:** https://aerotrack-backend-1tlt.onrender.com/docs
 
-> **Note:** The backend runs on Render's free tier, which normally sleeps after 15 minutes of inactivity. An UptimeRobot monitor pings the health endpoint every 5 minutes to keep it warm 24/7, so users experience sub-second response times. See the Uptime Optimization section below for details.
+> **Note:** The backend is hosted on Render's free tier and sleeps after 15 minutes of inactivity. The first request after a period of inactivity may take 20–30 seconds to warm up.
 
 ---
 
@@ -30,11 +30,11 @@ This is a production-grade pattern for keeping free-tier services responsive wit
 
 ## 1. Overview
 
-**AeroTrack** is an end-to-end environmental intelligence platform built in response to the **"Real-Time Air Quality Monitoring and Prediction for User-Selected Regions"** problem statement. Atmospheric pollutants such as fine particulate matter ($\text{PM}_{2.5}$) pose severe public health risks worldwide, yet accessing localized, actionable air quality data combined with dependable forward-looking projections remains challenging for general citizens and researchers alike.
+**AeroTrack** is an end-to-end environmental intelligence platform built in response to the **"Real-Time Air Quality Monitoring and Prediction for User-Selected Regions"** problem statement. Atmospheric pollutants such as fine particulate matter (PM2.5) pose severe public health risks worldwide, yet accessing localized, actionable air quality data combined with dependable forward-looking projections remains challenging for general citizens and researchers alike.
 
 AeroTrack bridges this gap by enabling users to either click any coordinate across an interactive global map or query any city or neighborhood via an autocomplete search bar. The system immediately aggregates multi-pollutant telemetry, maps readings to official standard thresholds, and calculates demographic-specific health advisories.
 
-To anticipate air quality fluctuations, AeroTrack deploys an on-demand machine learning pipeline powered by **XGBoost**. When a location is queried, the backend dynamically fetches up to 92 days of hourly atmospheric and meteorological historical data, extracts temporal, lag, rolling, and interaction features, trains a localized gradient boosted regression model, and generates an autoregressive 24-hour $\text{PM}_{2.5}$ forecast complete with step-dependent uncertainty bounds.
+To anticipate air quality fluctuations, AeroTrack deploys an on-demand machine learning pipeline powered by **XGBoost**. When a location is queried, the backend dynamically fetches up to 92 days of hourly atmospheric and meteorological historical data, extracts temporal, lag, rolling, and interaction features, trains a localized gradient boosted regression model, and generates an autoregressive 24-hour PM2.5 forecast complete with step-dependent uncertainty bounds.
 
 ---
 
@@ -44,16 +44,16 @@ To anticipate air quality fluctuations, AeroTrack deploys an on-demand machine l
 - **Place Search with Autocomplete**: Rate-limited, debounced search against OpenStreetMap's Nominatim engine with direct jump-to-location behavior.
 - **Reverse Geocoding**: Automatic resolution of raw GPS coordinates to city, administrative subdivision, and country names via BigDataCloud.
 - **Real-Time Pollutant Breakdown**: Instant telemetry cards for 6 primary criteria air pollutants:
-  - Fine Particulate Matter ($\text{PM}_{2.5}$)
-  - Coarse Particulate Matter ($\text{PM}_{10}$)
-  - Nitrogen Dioxide ($\text{NO}_2$)
-  - Sulphur Dioxide ($\text{SO}_2$)
-  - Ground-Level Ozone ($\text{O}_3$)
-  - Carbon Monoxide ($\text{CO}$)
+  - Fine Particulate Matter (PM2.5)
+  - Coarse Particulate Matter (PM10)
+  - Nitrogen Dioxide (NO₂)
+  - Sulphur Dioxide (SO₂)
+  - Ground-Level Ozone (O₃)
+  - Carbon Monoxide (CO)
 - **US EPA AQI Rating Engine**: Breakpoint mapping adhering to US EPA standards, color-coded across all 6 official severity tiers.
-- **7-Day Historical Trends**: Interactive time-series charts displaying 168+ hours of historical data with a metric toggle between Fine Dust $\text{PM}_{2.5}$ ($\mu\text{g/m}^3$) and US AQI.
-- **24-Hour ML Forecast**: On-demand hourly $\text{PM}_{2.5}$ projections generated autoregressively by XGBoost, featuring heuristic uncertainty bands and plain-English summary alerts.
-- **Dual-Layer Reference Lines**: Visual benchmarks displaying the **Safe Limit ($15\,\mu\text{g/m}^3$, WHO 2021 Guideline)** and **Caution Limit ($35\,\mu\text{g/m}^3$, US EPA Moderate Threshold)**.
+- **7-Day Historical Trends**: Interactive time-series charts displaying 168+ hours of historical data with a metric toggle between Fine Dust PM2.5 (µg/m³) and US AQI.
+- **24-Hour ML Forecast**: On-demand hourly PM2.5 projections generated autoregressively by XGBoost, featuring heuristic uncertainty bands and plain-English summary alerts.
+- **Dual-Layer Reference Lines**: Visual benchmarks displaying the **Safe Limit (15 µg/m³, WHO 2021 Guideline)** and **Caution Limit (35 µg/m³, US EPA Moderate Threshold)**.
 - **Actionable Health Advisories**: Semantic, rule-based recommendations tailored for Outdoor Activities, Home Ventilation, Mask Usage, and Sensitive Demographic Groups.
 
 ---
@@ -106,19 +106,19 @@ The predictive engine employs an autoregressive Extreme Gradient Boosting (XGBoo
 ### Pipeline Stages
 
 1. **Data Acquisition (92 Days Hourly)**:
-   - Fetches 92 days of hourly readings from Open-Meteo Air Quality and Weather APIs: $\text{PM}_{2.5}$, $\text{NO}_2$, $\text{O}_3$, 10-meter wind speed, 2-meter temperature, and 2-meter relative humidity.
+   - Fetches 92 days of hourly readings from Open-Meteo Air Quality and Weather APIs: PM2.5, NO₂, O₃, 10-meter wind speed, 2-meter temperature, and 2-meter relative humidity.
    - Timestamps use `timezone="auto"` and are localized to local solar time using `utc_offset_seconds`.
 2. **Feature Engineering**:
-   - **Cyclical Time Encodings**: Hour of the day ($0\text{--}23$) and day of the week ($0\text{--}6$) transformed onto continuous trigonometric circles:
-     $$\text{hour\_sin} = \sin\left(\frac{2\pi \cdot \text{hour}}{24}\right), \quad \text{hour\_cos} = \cos\left(\frac{2\pi \cdot \text{hour}}{24}\right)$$
-     $$\text{dow\_sin} = \sin\left(\frac{2\pi \cdot \text{dow}}{7}\right), \quad \text{dow\_cos} = \cos\left(\frac{2\pi \cdot \text{dow}}{7}\right)$$
-   - **Autoregressive Lag Features**: 1h, 2h, 3h, 6h, 12h, and 24h lag variables capturing immediate momentum and daily diurnal periodicity.
-   - **Polynomial Lag Features**: $\text{lag}_1^2$ and $\text{lag}_{24}^2$ enabling non-linear splits during rapid pollutant spikes.
-   - **Rolling Window Statistics**: 6-hour moving mean, 24-hour moving mean, and 24-hour moving standard deviation calculated on shifted values to prevent lookahead data leakage.
+   - **Cyclical Time Encodings**: Hour of the day (0–23) and day of the week (0–6) transformed onto continuous trigonometric circles:
+     - `hour_sin = sin(2π · hour / 24)`, `hour_cos = cos(2π · hour / 24)`
+     - `dow_sin = sin(2π · dow / 7)`, `dow_cos = cos(2π · dow / 7)`
+   - **Autoregressive Lag Features**: 1h, 2h, 3h, 6h, 12h, and 24h lag variables capturing immediate momentum and daily diurnal periodicity (`pm25_lag1` through `pm25_lag24`).
+   - **Polynomial Lag Features**: `pm25_lag1_squared` and `pm25_lag24_squared` enabling non-linear splits during rapid pollutant spikes.
+   - **Rolling Window Statistics**: 6-hour moving mean (`rolling_mean_6`), 24-hour moving mean (`rolling_mean_24`), and 24-hour moving standard deviation (`rolling_std_24`) calculated on shifted values to prevent lookahead data leakage.
    - **Meteorological Interactions**:
-     - $\text{wind\_pm25\_ratio} = \frac{\text{PM}_{2.5(t-1)}}{\text{WindSpeed} + 0.1}$ (stagnant vs. dispersion conditions)
-     - $\text{humidity\_temp\_ratio} = \frac{\text{Humidity}}{\text{Temperature} + 40.0}$ (boundary layer inversion proxy)
-     - $\text{no2\_o3\_ratio} = \frac{\text{NO}_2}{\text{O}_3 + 1.0}$ (photochemical equilibrium proxy)
+     - `wind_pm25_ratio = pm25_lag1 / (wind_speed + 0.1)` (stagnant vs. dispersion conditions)
+     - `humidity_temp_ratio = humidity / (temperature + 40.0)` (boundary layer inversion proxy)
+     - `no2_o3_ratio = no2 / (o3 + 1.0)` (photochemical equilibrium proxy)
 3. **Model Configuration**:
    - **Algorithm**: `xgb.XGBRegressor`
    - **Estimators**: 120 trees
@@ -126,14 +126,15 @@ The predictive engine employs an autoregressive Extreme Gradient Boosting (XGBoo
    - **Learning Rate**: `0.08`
    - **Subsample & Colsample**: `0.85` subsample, `0.85` colsample per tree
 4. **Forecast Method (Autoregressive 24-Step Loop)**:
-   - For each step $h \in [1, 24]$, the model generates an inference $\widehat{y}_{t+h}$.
-   - The predicted value is appended to the feature array and becomes the new $\text{lag}_1$ input for step $h+1$. Lags, rolling statistics, and temporal encodings roll forward dynamically.
+   - For each step `h` in 1 to 24, the model generates an inference for step `h`.
+   - The predicted value is appended to the feature array and becomes the new lag-1 input for step `h + 1`. Lags, rolling statistics, and temporal encodings roll forward dynamically.
 5. **Uncertainty Bands**:
    - Derives step-dependent uncertainty margins from recent historical residual variance:
-     $$\text{Margin}_h = \left(1.645 \cdot \sigma_{\text{residuals}}\right) \cdot (1.0 + 0.03 \cdot h)$$
-     $$\text{Lower}_h = \max(0, \widehat{y}_{t+h} - \text{Margin}_h), \quad \text{Upper}_h = \widehat{y}_{t+h} + \text{Margin}_h$$
+     - `Margin_h = 1.645 · sigma_residuals · (1.0 + 0.03 · h)`
+     - `Lower_h = max(0, Prediction_h - Margin_h)`
+     - `Upper_h = Prediction_h + Margin_h`
 6. **Two-Tier In-Memory Caching**:
-   - **10-Minute Shared Air Cache**: Stores live telemetry and 7-day trends (`(round(lat, 4), round(lon, 4))`), eliminating duplicate requests between `/api/air-quality` and `/api/trends`.
+   - **10-Minute Shared Air Cache**: Stores live telemetry and 7-day trends keyed by `(round(lat, 4), round(lon, 4))`, eliminating duplicate requests between `/api/air-quality` and `/api/trends`.
    - **30-Minute Model Cache**: Retains trained XGBoost estimators and generated 24-hour forecasts per coordinate pair.
 
 ---
@@ -144,9 +145,9 @@ AeroTrack locks all classification to the official **US Environmental Protection
 
 ### US EPA Breakpoint Table
 
-All concentrations are measured in **$\mu\text{g/m}^3$**:
+All concentrations are measured in **µg/m³**:
 
-| AQI Category | AQI Range | Color | $\text{PM}_{2.5}$ (24h) | $\text{PM}_{10}$ (24h) | $\text{O}_3$ (8h) | $\text{CO}$ (8h) | $\text{SO}_2$ (1h) | $\text{NO}_2$ (1h) |
+| AQI Category | AQI Range | Color | PM2.5 (24h) | PM10 (24h) | O₃ (8h) | CO (8h) | SO₂ (1h) | NO₂ (1h) |
 |---|---|---|---|---|---|---|---|---|
 | **Good** | 0 – 50 | `#10b981` (Green) | 0.0 – 9.0 | 0 – 54 | 0.0 – 107.9 | 0 – 5,039 | 0.0 – 91.7 | 0.0 – 99.6 |
 | **Moderate** | 51 – 100 | `#eab308` (Yellow) | 9.1 – 35.4 | 55 – 154 | 108.0 – 137.2 | 5,040 – 10,763 | 91.8 – 196.5 | 99.7 – 188.0 |
@@ -157,8 +158,8 @@ All concentrations are measured in **$\mu\text{g/m}^3$**:
 
 ### WHO 2021 Reference Guideline
 On both the 7-day trend chart and the 24-hour forecast chart, AeroTrack displays two constant visual benchmarks:
-- **Safe Limit ($15\,\mu\text{g/m}^3$)**: The World Health Organization (WHO) 2021 recommended 24-hour guideline for $\text{PM}_{2.5}$ exposure.
-- **Caution Limit ($35\,\mu\text{g/m}^3$)**: The US EPA threshold boundary separating Good/Moderate from Unhealthy for Sensitive Groups.
+- **Safe Limit (15 µg/m³)**: The World Health Organization (WHO) 2021 recommended 24-hour guideline for PM2.5 exposure.
+- **Caution Limit (35 µg/m³)**: The US EPA threshold boundary separating Good/Moderate from Unhealthy for Sensitive Groups.
 
 ---
 
@@ -186,8 +187,8 @@ On both the 7-day trend chart and the 24-hour forecast chart, AeroTrack displays
 | `GET` / `HEAD` | `/` | API status manifest, health overview, and endpoint discovery directory |
 | `GET` / `HEAD` | `/api/health` | Dedicated lightweight uptime and health-check endpoint for cloud platforms |
 | `GET` | `/api/air-quality/{lat}/{lon}` | Current pollutant telemetry, US AQI score, and individual pollutant ratings |
-| `GET` | `/api/trends/{lat}/{lon}` | 7-day hourly historical and current pollutant trends ($\text{PM}_{2.5}$, $\text{PM}_{10}$, $\text{O}_3$, $\text{NO}_2$, AQI) |
-| `GET` | `/api/predict/{lat}/{lon}` | Trains a localized XGBoost regressor and returns a 24-hour autoregressive $\text{PM}_{2.5}$ forecast |
+| `GET` | `/api/trends/{lat}/{lon}` | 7-day hourly historical and current pollutant trends (PM2.5, PM10, O₃, NO₂, AQI) |
+| `GET` | `/api/predict/{lat}/{lon}` | Trains a localized XGBoost regressor and returns a 24-hour autoregressive PM2.5 forecast |
 | `GET` | `/api/search?q={query}` | Autocomplete search for global places with rate-limiting and debouncing |
 | `GET` | `/api/reverse-geocode/{lat}/{lon}` | Resolves latitude/longitude coordinates into city, administrative region, and country |
 
@@ -262,7 +263,7 @@ npm run dev
 
 - **92-Day Training Window**: Training is bounded to 92 historical days to ensure sub-second API execution and avoid excessive payload sizes, which may under-sample multi-year seasonal patterns.
 - **Heuristic Confidence Bands**: Uncertainty intervals expand via residual variance multipliers rather than full quantile loss regression (`reg:quantileerror`) or Bayesian posterior sampling.
-- **$\text{PM}_{2.5}$-Only Forecast Model**: Machine learning prediction is focused specifically on $\text{PM}_{2.5}$ due to its primary health risk, while other pollutants are monitored via historical trends and current telemetry.
+- **PM2.5-Only Forecast Model**: Machine learning prediction is focused specifically on PM2.5 due to its primary health risk, while other pollutants are monitored via historical trends and current telemetry.
 - **Grid-Based Model Data vs Ground Sensors**: Atmospheric telemetry is derived from spatial grid reanalysis models rather than hyper-local physical street monitors, which can smooth localized micro-climate spikes.
 
 ---
@@ -270,10 +271,10 @@ npm run dev
 ## 11. What I'd Add Next
 
 - **OpenAQ Physical Ground-Station Ingestion**: Merge real-time ground-station monitoring feeds alongside satellite reanalysis for ground-truth bias correction.
-- **Quantile Regression Intervals**: Upgrade XGBoost training to use quantile regression loss to produce mathematically rigorous $10^{\text{th}}$ and $90^{\text{th}}$ percentile bounds.
+- **Quantile Regression Intervals**: Upgrade XGBoost training to use quantile regression loss to produce mathematically rigorous 10th and 90th percentile bounds.
 - **SHAP (SHapley Additive exPlanations)**: Provide interactive visual feature attribution explaining which atmospheric drivers (e.g. wind drop, rush hour) caused predicted spikes.
 - **Multi-City Comparison**: Side-by-side dashboard comparing air quality across multiple user-selected locations simultaneously.
-- **Automated Threshold Push Notifications**: Browser and webhook alerts when predicted $\text{PM}_{2.5}$ is forecasted to exceed safe levels.
+- **Automated Threshold Push Notifications**: Browser and webhook alerts when predicted PM2.5 is forecasted to exceed safe levels.
 
 ---
 
