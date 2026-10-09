@@ -1,5 +1,6 @@
 import os
 import time
+import asyncio
 import httpx
 import numpy as np
 import pandas as pd
@@ -8,9 +9,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional, Tuple
 
 # In-memory cache for models and predictions
-# Key: (round(lat, 4), round(lon, 4)), Value: { 'timestamp': float, 'model': model, 'data': dict }
+# Key: (round(lat, 4), round(lon, 4), allow_demo), Value: { 'timestamp': float, 'model': model, 'data': dict }
 MODEL_CACHE: Dict[tuple, Dict[str, Any]] = {}
 CACHE_TTL_SECONDS = 1800  # 30 minutes
+
+# In-memory cache for conformal calibration quantiles
+# Key: (round(lat, 4), round(lon, 4)), Value: { 'timestamp': float, 'quantiles': dict, 'calibration_samples': int }
+CALIBRATION_CACHE: Dict[Tuple[float, float], Dict[str, Any]] = {}
+CALIBRATION_TTL_SECONDS = 21600  # 6 hours
+
+# Coordinate-level asyncio locks to serialize duplicate concurrent forecast training
+FORECAST_LOCKS: Dict[Tuple[float, float], asyncio.Lock] = {}
+_LOCKS_GUARD = asyncio.Lock()
 
 
 def normalize_coordinates(lat: float, lon: float) -> tuple[float, float]:
@@ -21,6 +31,16 @@ def normalize_coordinates(lat: float, lon: float) -> tuple[float, float]:
     clamped_lat = max(-89.9, min(89.9, float(lat)))
     wrapped_lon = (((float(lon) + 180.0) % 360.0 + 360.0) % 360.0) - 180.0
     return round(clamped_lat, 4), round(wrapped_lon, 4)
+
+
+async def get_coordinate_lock(lat: float, lon: float) -> asyncio.Lock:
+    """Retrieve or create an asyncio.Lock for the specified normalized coordinate pair."""
+    norm_lat, norm_lon = normalize_coordinates(lat, lon)
+    key = (norm_lat, norm_lon)
+    async with _LOCKS_GUARD:
+        if key not in FORECAST_LOCKS:
+            FORECAST_LOCKS[key] = asyncio.Lock()
+        return FORECAST_LOCKS[key]
 
 
 import logging
@@ -364,8 +384,7 @@ def predict_autoregressive_rollout(
     At each step h, lag and rolling features are derived strictly from history
     and previous model predictions (zero future data leakage).
     """
-    current_series = history_df.copy().reset_index(drop=True)
-    last_row = current_series.iloc[-1]
+    last_row = history_df.iloc[-1]
     last_time = last_row["time"]
 
     last_wind = float(last_row.get("wind_speed", 3.5))
@@ -373,6 +392,14 @@ def predict_autoregressive_rollout(
     last_humidity = float(last_row.get("humidity", 50.0))
     last_no2 = float(last_row.get("no2", 15.0))
     last_o3 = float(last_row.get("o3", 30.0))
+
+    target_series = history_df["pm25"] if "pm25" in history_df.columns else history_df["pm2_5"]
+    pm_history = [float(x) for x in target_series.values]
+
+    temp_denom = last_temp + 1.0 if abs(last_temp + 1.0) > 1e-4 else 1e-4
+    humidity_temp_ratio = float(last_humidity / temp_denom)
+    no2_o3_ratio = float(last_no2 / (max(0.0, last_o3) + 1.0))
+    wind_denom = max(0.0, last_wind) + 1.0
 
     preds: List[float] = []
 
@@ -386,7 +413,6 @@ def predict_autoregressive_rollout(
         dow_sin = np.sin(2.0 * np.pi * day_of_week / 7.0)
         dow_cos = np.cos(2.0 * np.pi * day_of_week / 7.0)
 
-        pm_history = current_series["pm25"].values
         pm25_lag1 = pm_history[-1]
         pm25_lag2 = pm_history[-2] if len(pm_history) >= 2 else pm25_lag1
         pm25_lag3 = pm_history[-3] if len(pm_history) >= 3 else pm25_lag2
@@ -397,10 +423,7 @@ def predict_autoregressive_rollout(
         pm25_lag1_squared = float(pm25_lag1 ** 2)
         pm25_lag24_squared = float(pm25_lag24 ** 2)
 
-        wind_pm25_ratio = float(pm25_lag1 / (max(0.0, last_wind) + 1.0))
-        temp_denom = last_temp + 1.0 if abs(last_temp + 1.0) > 1e-4 else 1e-4
-        humidity_temp_ratio = float(last_humidity / temp_denom)
-        no2_o3_ratio = float(last_no2 / (max(0.0, last_o3) + 1.0))
+        wind_pm25_ratio = float(pm25_lag1 / wind_denom)
 
         recent_6 = pm_history[-6:]
         recent_24 = pm_history[-24:]
@@ -408,7 +431,7 @@ def predict_autoregressive_rollout(
         rolling_mean_24 = float(np.mean(recent_24))
         rolling_std_24 = float(np.std(recent_24)) if len(recent_24) > 1 else 0.0
 
-        step_features = pd.DataFrame([{
+        feature_map = {
             "hour_sin": hour_sin,
             "hour_cos": hour_cos,
             "dow_sin": dow_sin,
@@ -427,23 +450,13 @@ def predict_autoregressive_rollout(
             "rolling_mean_6": rolling_mean_6,
             "rolling_mean_24": rolling_mean_24,
             "rolling_std_24": rolling_std_24
-        }])[feature_cols]
+        }
+        feat_vector = np.array([[feature_map[c] for c in feature_cols]], dtype=np.float32)
 
-        pred_val = float(model.predict(step_features)[0])
+        pred_val = float(model.predict(feat_vector)[0])
         pred_val = max(1.0, round(pred_val, 1))
         preds.append(pred_val)
-
-        new_row = pd.DataFrame([{
-            "time": next_time,
-            "pm25": pred_val,
-            "pm2_5": pred_val,
-            "wind_speed": last_wind,
-            "temperature": last_temp,
-            "humidity": last_humidity,
-            "no2": last_no2,
-            "o3": last_o3
-        }])
-        current_series = pd.concat([current_series, new_row], ignore_index=True)
+        pm_history.append(pred_val)
 
     return preds
 
@@ -492,7 +505,7 @@ def calibrate_conformal_quantiles(
     target_col: str = "pm25",
     horizon: int = 24,
     alpha: float = 0.10,
-    stride_hours: int = 4
+    stride_hours: int = 6
 ) -> Tuple[Dict[int, float], int]:
     """
     Calibrate horizon-specific split conformal quantiles on an independent holdout history partition.
@@ -517,7 +530,7 @@ def calibrate_conformal_quantiles(
     residuals_by_h: Dict[int, List[float]] = {h: [] for h in range(1, horizon + 1)}
 
     for origin in origins:
-        history_to_origin = history_df.iloc[:origin + 1].copy()
+        history_to_origin = history_df.iloc[:origin + 1]
         gt = history_df.iloc[origin + 1 : origin + 1 + horizon][target_col].values
         if len(gt) < horizon:
             continue
@@ -554,9 +567,10 @@ async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = Fal
     """
     Fetch 92 days of atmospheric and meteorological data, train an XGBoost model,
     and autoregressively forecast the next 24 hours of PM2.5.
-    Uses in-memory caching with a 30-minute TTL.
+    Uses in-memory caching with a 30-minute TTL and coordinate serialization locks.
     """
-    cache_key = (round(lat, 4), round(lon, 4), allow_demo)
+    norm_lat, norm_lon = normalize_coordinates(lat, lon)
+    cache_key = (norm_lat, norm_lon, allow_demo)
     now = time.time()
 
     if cache_key in MODEL_CACHE:
@@ -564,269 +578,317 @@ async def train_and_forecast_pm25(lat: float, lon: float, allow_demo: bool = Fal
         if now - cached["timestamp"] < CACHE_TTL_SECONDS:
             return cached["data"]
 
-    # 1. Fetch 92 days of hourly data (PM2.5, NO2, O3, Wind Speed, Temperature, Humidity)
-    df, utc_offset_seconds, is_synthetic = await fetch_historical_air_quality(lat, lon, allow_demo=allow_demo)
+    coord_lock = await get_coordinate_lock(norm_lat, norm_lon)
+    async with coord_lock:
+        now = time.time()
+        if cache_key in MODEL_CACHE:
+            cached = MODEL_CACHE[cache_key]
+            if now - cached["timestamp"] < CACHE_TTL_SECONDS:
+                return cached["data"]
 
-    # Ensure df["time"] is timezone-naive for safe comparison against local naive timestamps
-    if hasattr(df["time"].dtype, "tz") and df["time"].dt.tz is not None:
-        df["time"] = df["time"].dt.tz_localize(None)
+        t_pipeline_start = time.perf_counter()
 
-    # Determine current timestamp aligned to Open-Meteo's timezone
-    if utc_offset_seconds != 0:
-        loc_tz = timezone(timedelta(seconds=utc_offset_seconds))
-        now_local = datetime.now(loc_tz).replace(tzinfo=None)
-    else:
-        # Fallback to UTC if no offset
-        now_local = datetime.now(timezone.utc).replace(tzinfo=None)
+        # 1. Fetch 92 days of hourly data (PM2.5, NO2, O3, Wind Speed, Temperature, Humidity)
+        t_fetch_start = time.perf_counter()
+        df, utc_offset_seconds, is_synthetic = await fetch_historical_air_quality(norm_lat, norm_lon, allow_demo=allow_demo)
+        fetch_seconds = round(time.perf_counter() - t_fetch_start, 3)
 
-    # Find the last row in DataFrame where time <= current time
-    df_past = df[df["time"] <= now_local].copy()
-    if df_past.empty:
-        # Fallback: use the most recent row with non-null pm25
-        current_row = df.dropna(subset=["pm25"]).iloc[-1]
-    else:
-        current_row = df_past.iloc[-1]
+        # Ensure df["time"] is timezone-naive for safe comparison against local naive timestamps
+        if hasattr(df["time"].dtype, "tz") and df["time"].dt.tz is not None:
+            df["time"] = df["time"].dt.tz_localize(None)
 
-    # Retain all past observations up through the current hour for autoregressive state
-    last_idx = df.index[df["time"] == current_row["time"]].tolist()
-    if last_idx:
-        current_time_series = df.iloc[:last_idx[0] + 1].copy().reset_index(drop=True)
-    else:
-        current_time_series = df_past.copy().reset_index(drop=True)
+        # Determine current timestamp aligned to Open-Meteo's timezone
+        if utc_offset_seconds != 0:
+            loc_tz = timezone(timedelta(seconds=utc_offset_seconds))
+            now_local = datetime.now(loc_tz).replace(tzinfo=None)
+        else:
+            # Fallback to UTC if no offset
+            now_local = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    last_timestamp = current_row["time"]
-    last_wind = float(current_row["wind_speed"])
-    last_temp = float(current_row["temperature"])
-    last_humidity = float(current_row["humidity"])
-    last_no2 = float(current_row["no2"])
-    last_o3 = float(current_row["o3"])
-    current_pm25_val = float(current_row["pm25"])
+        # Find the last row in DataFrame where time <= current time
+        df_past = df[df["time"] <= now_local].copy()
+        if df_past.empty:
+            # Fallback: use the most recent row with non-null pm25
+            current_row = df.dropna(subset=["pm25"]).iloc[-1]
+        else:
+            current_row = df_past.iloc[-1]
 
-    # 2. Build feature matrix using upgraded engineer_features on historical past data
-    df_feat = engineer_features(current_time_series)
-    
-    feature_cols = get_feature_columns()
-    
-    # 3. Ensure no NaN values leak into the training set
-    target_col = "pm25" if "pm25" in df_feat.columns else "pm2_5"
-    train_df = df_feat.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
-    train_df = train_df.replace([np.inf, -np.inf], np.nan).dropna(subset=feature_cols).reset_index(drop=True)
+        # Retain all past observations up through the current hour for autoregressive state
+        last_idx = df.index[df["time"] == current_row["time"]].tolist()
+        if last_idx:
+            current_time_series = df.iloc[:last_idx[0] + 1].copy().reset_index(drop=True)
+        else:
+            current_time_series = df_past.copy().reset_index(drop=True)
 
-    if len(train_df) < 50:
-        logger.warning(f"Training dataset too small ({len(train_df)} samples) for ({lat}, {lon})")
-        raise InsufficientDataError(
-            f"Insufficient historical data to train the forecasting model (minimum 50 samples required, got {len(train_df)}).",
-            status_code=422
-        )
+        last_timestamp = current_row["time"]
+        last_wind = float(current_row["wind_speed"])
+        last_temp = float(current_row["temperature"])
+        last_humidity = float(current_row["humidity"])
+        last_no2 = float(current_row["no2"])
+        last_o3 = float(current_row["o3"])
+        current_pm25_val = float(current_row["pm25"])
 
-    # 4. Train XGBoost Regressor and Calibrate Prediction Intervals
-    conformal_quantiles: Optional[Dict[int, float]] = None
-    calibration_samples_count: int = 0
-    interval_method: str = "estimated_uncertainty_heuristic"
-    nominal_coverage: Optional[float] = None
-    interval_label: str = "Estimated Uncertainty Band (uncalibrated heuristic)"
+        # 2. Build feature matrix using upgraded engineer_features on historical past data
+        t_feat_start = time.perf_counter()
+        df_feat = engineer_features(current_time_series)
+        feature_cols = get_feature_columns()
 
-    if not is_synthetic and len(train_df) >= 100:
-        # Strict Chronological Partition: 80% Proper Train, 20% Conformal Calibration
-        proper_train_len = int(len(train_df) * 0.80)
-        proper_train_df = train_df.iloc[:proper_train_len]
+        # 3. Ensure no NaN values leak into the training set
+        target_col = "pm25" if "pm25" in df_feat.columns else "pm2_5"
+        train_df = df_feat.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
+        train_df = train_df.replace([np.inf, -np.inf], np.nan).dropna(subset=feature_cols).reset_index(drop=True)
+        feature_engineering_seconds = round(time.perf_counter() - t_feat_start, 3)
 
-        X_train = proper_train_df[feature_cols]
-        y_train = proper_train_df[target_col]
-
-        # Verify no NaN values in proper training set
-        if X_train.isna().any().any() or y_train.isna().any():
-            logger.error(f"NaN values detected in training set feature matrix for ({lat}, {lon})")
-            raise ModelTrainingError("NaN values detected in training set feature matrix.", status_code=500)
-
-        try:
-            model = xgb.XGBRegressor(
-                n_estimators=120,
-                max_depth=4,
-                learning_rate=0.08,
-                subsample=0.85,
-                colsample_bytree=0.85,
-                random_state=42,
-                n_jobs=-1
+        if len(train_df) < 50:
+            logger.warning(f"Training dataset too small ({len(train_df)} samples) for ({norm_lat}, {norm_lon})")
+            raise InsufficientDataError(
+                f"Insufficient historical data to train the forecasting model (minimum 50 samples required, got {len(train_df)}).",
+                status_code=422
             )
-            model.fit(X_train, y_train)
-        except Exception as exc:
-            logger.error(f"XGBoost training failure for ({lat}, {lon}): {exc}")
-            raise ModelTrainingError("Model training failed on historical observations.", status_code=500) from exc
 
-        # Calibrate conformal quantiles on independent holdout partition
-        conformal_quantiles, calibration_samples_count = calibrate_conformal_quantiles(
-            model=model,
-            history_df=train_df,
-            calib_start_idx=proper_train_len,
-            calib_end_idx=len(train_df),
-            feature_cols=feature_cols,
-            target_col=target_col,
-            horizon=24,
-            alpha=0.10,
-            stride_hours=4
-        )
-        if conformal_quantiles:
-            interval_method = "split_conformal_prediction"
-            nominal_coverage = 0.90
-            interval_label = "90% Conformal Prediction Interval (calibrated on holdout history)"
-            logger.info(f"Calibrated 90% conformal intervals across {calibration_samples_count} holdout windows for ({lat}, {lon})")
-    else:
-        # For synthetic demo data or smaller datasets (<100 samples), train on full train_df and use heuristic
-        X_train = train_df[feature_cols]
-        y_train = train_df[target_col]
+        # 4. Train XGBoost Regressor and Calibrate Prediction Intervals
+        conformal_quantiles: Optional[Dict[int, float]] = None
+        calibration_samples_count: int = 0
+        interval_method: str = "estimated_uncertainty_heuristic"
+        nominal_coverage: Optional[float] = None
+        interval_label: str = "Estimated Uncertainty Band (uncalibrated heuristic)"
 
-        if X_train.isna().any().any() or y_train.isna().any():
-            logger.error(f"NaN values detected in training set feature matrix for ({lat}, {lon})")
-            raise ModelTrainingError("NaN values detected in training set feature matrix.", status_code=500)
+        t_train_start = time.perf_counter()
+        if not is_synthetic and len(train_df) >= 100:
+            # Strict Chronological Partition: 80% Proper Train, 20% Conformal Calibration
+            proper_train_len = int(len(train_df) * 0.80)
+            proper_train_df = train_df.iloc[:proper_train_len]
 
-        try:
-            model = xgb.XGBRegressor(
-                n_estimators=120,
-                max_depth=4,
-                learning_rate=0.08,
-                subsample=0.85,
-                colsample_bytree=0.85,
-                random_state=42,
-                n_jobs=-1
-            )
-            model.fit(X_train, y_train)
-        except Exception as exc:
-            logger.error(f"XGBoost training failure for ({lat}, {lon}): {exc}")
-            raise ModelTrainingError("Model training failed on historical observations.", status_code=500) from exc
+            X_train = proper_train_df[feature_cols]
+            y_train = proper_train_df[target_col]
 
-    # 5. Multi-step Autoregressive Forecasting for next 24 hours
-    predictions: List[Dict[str, Any]] = []
+            # Verify no NaN values in proper training set
+            if X_train.isna().any().any() or y_train.isna().any():
+                logger.error(f"NaN values detected in training set feature matrix for ({norm_lat}, {norm_lon})")
+                raise ModelTrainingError("NaN values detected in training set feature matrix.", status_code=500)
 
-    for step in range(1, 25):
-        next_time = last_timestamp + timedelta(hours=step)
-        hour = next_time.hour
-        day_of_week = next_time.weekday()
+            try:
+                model = xgb.XGBRegressor(
+                    n_estimators=120,
+                    max_depth=4,
+                    learning_rate=0.08,
+                    subsample=0.85,
+                    colsample_bytree=0.85,
+                    random_state=42,
+                    n_jobs=-1
+                )
+                model.fit(X_train, y_train)
+            except Exception as exc:
+                logger.error(f"XGBoost training failure for ({norm_lat}, {norm_lon}): {exc}")
+                raise ModelTrainingError("Model training failed on historical observations.", status_code=500) from exc
+            train_seconds = round(time.perf_counter() - t_train_start, 3)
 
-        # Cyclical temporal encodings
-        hour_sin = np.sin(2.0 * np.pi * hour / 24.0)
-        hour_cos = np.cos(2.0 * np.pi * hour / 24.0)
-        dow_sin = np.sin(2.0 * np.pi * day_of_week / 7.0)
-        dow_cos = np.cos(2.0 * np.pi * day_of_week / 7.0)
+            # Check Conformal Calibration Cache
+            t_calib_start = time.perf_counter()
+            calib_key = (norm_lat, norm_lon)
+            calib_hit = False
+            if calib_key in CALIBRATION_CACHE:
+                cached_calib = CALIBRATION_CACHE[calib_key]
+                if time.time() - cached_calib["timestamp"] < CALIBRATION_TTL_SECONDS:
+                    conformal_quantiles = cached_calib["quantiles"]
+                    calibration_samples_count = cached_calib["calibration_samples"]
+                    calib_hit = True
+                    logger.info(f"Reusing cached conformal calibration quantiles for ({norm_lat}, {norm_lon})")
 
-        # Lags from autoregressively updated history
-        pm_history = current_time_series["pm25"].values
-        pm25_lag1 = pm_history[-1]
-        pm25_lag2 = pm_history[-2] if len(pm_history) >= 2 else pm25_lag1
-        pm25_lag3 = pm_history[-3] if len(pm_history) >= 3 else pm25_lag2
-        pm25_lag6 = pm_history[-6] if len(pm_history) >= 6 else pm25_lag3
-        pm25_lag12 = pm_history[-12] if len(pm_history) >= 12 else pm25_lag6
-        pm25_lag24 = pm_history[-24] if len(pm_history) >= 24 else pm25_lag12
+            if not calib_hit:
+                conformal_quantiles, calibration_samples_count = calibrate_conformal_quantiles(
+                    model=model,
+                    history_df=train_df,
+                    calib_start_idx=proper_train_len,
+                    calib_end_idx=len(train_df),
+                    feature_cols=feature_cols,
+                    target_col=target_col,
+                    horizon=24,
+                    alpha=0.10,
+                    stride_hours=6
+                )
+                if conformal_quantiles:
+                    CALIBRATION_CACHE[calib_key] = {
+                        "timestamp": time.time(),
+                        "quantiles": conformal_quantiles,
+                        "calibration_samples": calibration_samples_count
+                    }
 
-        # Polynomial features
-        pm25_lag1_squared = float(pm25_lag1 ** 2)
-        pm25_lag24_squared = float(pm25_lag24 ** 2)
+            if conformal_quantiles:
+                interval_method = "split_conformal_prediction"
+                nominal_coverage = 0.90
+                interval_label = "90% Conformal Prediction Interval (calibrated on holdout history)"
+                logger.info(f"Calibrated 90% conformal intervals across {calibration_samples_count} holdout windows for ({norm_lat}, {norm_lon})")
+            calibration_seconds = round(time.perf_counter() - t_calib_start, 3)
+        else:
+            # For synthetic demo data or smaller datasets (<100 samples), train on full train_df and use heuristic
+            X_train = train_df[feature_cols]
+            y_train = train_df[target_col]
 
-        # Interaction features
-        wind_pm25_ratio = float(pm25_lag1 / (max(0.0, last_wind) + 1.0))
+            if X_train.isna().any().any() or y_train.isna().any():
+                logger.error(f"NaN values detected in training set feature matrix for ({norm_lat}, {norm_lon})")
+                raise ModelTrainingError("NaN values detected in training set feature matrix.", status_code=500)
+
+            try:
+                model = xgb.XGBRegressor(
+                    n_estimators=120,
+                    max_depth=4,
+                    learning_rate=0.08,
+                    subsample=0.85,
+                    colsample_bytree=0.85,
+                    random_state=42,
+                    n_jobs=-1
+                )
+                model.fit(X_train, y_train)
+            except Exception as exc:
+                logger.error(f"XGBoost training failure for ({norm_lat}, {norm_lon}): {exc}")
+                raise ModelTrainingError("Model training failed on historical observations.", status_code=500) from exc
+            train_seconds = round(time.perf_counter() - t_train_start, 3)
+            calibration_seconds = 0.0
+
+        # 5. Multi-step Autoregressive Forecasting for next 24 hours
+        t_forecast_start = time.perf_counter()
+        predictions: List[Dict[str, Any]] = []
+
+        pm_forecast_history = [float(v) for v in current_time_series["pm25"].values]
         temp_denom = last_temp + 1.0 if abs(last_temp + 1.0) > 1e-4 else 1e-4
         humidity_temp_ratio = float(last_humidity / temp_denom)
         no2_o3_ratio = float(last_no2 / (max(0.0, last_o3) + 1.0))
+        wind_denom = max(0.0, last_wind) + 1.0
 
-        # Rolling statistics
-        recent_6 = pm_history[-6:]
-        recent_24 = pm_history[-24:]
-        rolling_mean_6 = float(np.mean(recent_6))
-        rolling_mean_24 = float(np.mean(recent_24))
-        rolling_std_24 = float(np.std(recent_24)) if len(recent_24) > 1 else 0.0
+        for step in range(1, 25):
+            next_time = last_timestamp + timedelta(hours=step)
+            hour = next_time.hour
+            day_of_week = next_time.weekday()
 
-        step_features = pd.DataFrame([{
-            "hour_sin": hour_sin,
-            "hour_cos": hour_cos,
-            "dow_sin": dow_sin,
-            "dow_cos": dow_cos,
-            "wind_pm25_ratio": wind_pm25_ratio,
-            "humidity_temp_ratio": humidity_temp_ratio,
-            "no2_o3_ratio": no2_o3_ratio,
-            "pm25_lag1_squared": pm25_lag1_squared,
-            "pm25_lag24_squared": pm25_lag24_squared,
-            "pm25_lag1": pm25_lag1,
-            "pm25_lag2": pm25_lag2,
-            "pm25_lag3": pm25_lag3,
-            "pm25_lag6": pm25_lag6,
-            "pm25_lag12": pm25_lag12,
-            "pm25_lag24": pm25_lag24,
-            "rolling_mean_6": rolling_mean_6,
-            "rolling_mean_24": rolling_mean_24,
-            "rolling_std_24": rolling_std_24
-        }])[feature_cols]
+            # Cyclical temporal encodings
+            hour_sin = np.sin(2.0 * np.pi * hour / 24.0)
+            hour_cos = np.cos(2.0 * np.pi * hour / 24.0)
+            dow_sin = np.sin(2.0 * np.pi * day_of_week / 7.0)
+            dow_cos = np.cos(2.0 * np.pi * day_of_week / 7.0)
 
-        pred_val = float(model.predict(step_features)[0])
-        # PM2.5 cannot be negative
-        pred_val = max(1.0, round(pred_val, 1))
+            # Lags from autoregressively updated history
+            pm25_lag1 = pm_forecast_history[-1]
+            pm25_lag2 = pm_forecast_history[-2] if len(pm_forecast_history) >= 2 else pm25_lag1
+            pm25_lag3 = pm_forecast_history[-3] if len(pm_forecast_history) >= 3 else pm25_lag2
+            pm25_lag6 = pm_forecast_history[-6] if len(pm_forecast_history) >= 6 else pm25_lag3
+            pm25_lag12 = pm_forecast_history[-12] if len(pm_forecast_history) >= 12 else pm25_lag6
+            pm25_lag24 = pm_forecast_history[-24] if len(pm_forecast_history) >= 24 else pm25_lag12
 
-        # Prediction interval calculation
-        lower_bound, upper_bound, step_method = compute_prediction_interval(
-            pred_val=pred_val,
-            step=step,
-            conformal_quantiles=conformal_quantiles,
-            rolling_std_24=rolling_std_24
+            # Polynomial features
+            pm25_lag1_squared = float(pm25_lag1 ** 2)
+            pm25_lag24_squared = float(pm25_lag24 ** 2)
+
+            # Interaction features
+            wind_pm25_ratio = float(pm25_lag1 / wind_denom)
+
+            # Rolling statistics
+            recent_6 = pm_forecast_history[-6:]
+            recent_24 = pm_forecast_history[-24:]
+            rolling_mean_6 = float(np.mean(recent_6))
+            rolling_mean_24 = float(np.mean(recent_24))
+            rolling_std_24 = float(np.std(recent_24)) if len(recent_24) > 1 else 0.0
+
+            feature_map = {
+                "hour_sin": hour_sin,
+                "hour_cos": hour_cos,
+                "dow_sin": dow_sin,
+                "dow_cos": dow_cos,
+                "wind_pm25_ratio": wind_pm25_ratio,
+                "humidity_temp_ratio": humidity_temp_ratio,
+                "no2_o3_ratio": no2_o3_ratio,
+                "pm25_lag1_squared": pm25_lag1_squared,
+                "pm25_lag24_squared": pm25_lag24_squared,
+                "pm25_lag1": pm25_lag1,
+                "pm25_lag2": pm25_lag2,
+                "pm25_lag3": pm25_lag3,
+                "pm25_lag6": pm25_lag6,
+                "pm25_lag12": pm25_lag12,
+                "pm25_lag24": pm25_lag24,
+                "rolling_mean_6": rolling_mean_6,
+                "rolling_mean_24": rolling_mean_24,
+                "rolling_std_24": rolling_std_24
+            }
+            feat_vector = np.array([[feature_map[col] for col in feature_cols]], dtype=np.float32)
+
+            pred_val = float(model.predict(feat_vector)[0])
+            pred_val = max(1.0, round(pred_val, 1))
+
+            # Prediction interval calculation
+            lower_bound, upper_bound, step_method = compute_prediction_interval(
+                pred_val=pred_val,
+                step=step,
+                conformal_quantiles=conformal_quantiles,
+                rolling_std_24=rolling_std_24
+            )
+
+            predictions.append({
+                "step": step,
+                "time": next_time.strftime("%Y-%m-%dT%H:%M"),
+                "display_time": next_time.strftime("%I:%M %p"),
+                "display_date": next_time.strftime("%b %d"),
+                "predicted_pm25": pred_val,
+                "lower_bound": lower_bound,
+                "upper_bound": upper_bound,
+                "interval_method": step_method
+            })
+
+            # Append step prediction for subsequent lags
+            pm_forecast_history.append(pred_val)
+
+        forecast_seconds = round(time.perf_counter() - t_forecast_start, 3)
+        total_seconds = round(time.perf_counter() - t_pipeline_start, 3)
+
+        logger.info(
+            f"Forecast pipeline timings for ({norm_lat}, {norm_lon}): "
+            f"fetch={fetch_seconds}s, features={feature_engineering_seconds}s, "
+            f"train={train_seconds}s, calib={calibration_seconds}s, "
+            f"forecast={forecast_seconds}s, total={total_seconds}s"
         )
 
-        predictions.append({
-            "step": step,
-            "time": next_time.strftime("%Y-%m-%dT%H:%M"),
-            "display_time": next_time.strftime("%I:%M %p"),
-            "display_date": next_time.strftime("%b %d"),
-            "predicted_pm25": pred_val,
-            "lower_bound": lower_bound,
-            "upper_bound": upper_bound,
-            "interval_method": step_method
-        })
+        # Calculate basic summary
+        avg_pred = round(float(np.mean([p["predicted_pm25"] for p in predictions])), 1)
+        min_pred = min(p["predicted_pm25"] for p in predictions)
+        max_pred = max(p["predicted_pm25"] for p in predictions)
+        latest_history = round(current_pm25_val, 1)
 
-        # Append step prediction to series for subsequent lags
-        new_row = pd.DataFrame([{
-            "time": next_time,
-            "pm25": pred_val,
-            "pm2_5": pred_val,
-            "wind_speed": last_wind,
-            "temperature": last_temp,
-            "humidity": last_humidity,
-            "no2": last_no2,
-            "o3": last_o3
-        }])
-        current_time_series = pd.concat([current_time_series, new_row], ignore_index=True)
+        result = {
+            "status": "success",
+            "latitude": lat,
+            "longitude": lon,
+            "training_samples": len(train_df),
+            "days_trained": 92,
+            "current_time": last_timestamp.strftime("%Y-%m-%dT%H:%M"),
+            "current_display_time": last_timestamp.strftime("%I:%M %p"),
+            "current_pm25": latest_history,
+            "forecast_average": avg_pred,
+            "forecast_min": min_pred,
+            "forecast_max": max_pred,
+            "forecast": predictions,
+            "interval_method": interval_method,
+            "nominal_coverage": nominal_coverage,
+            "interval_label": interval_label,
+            "calibration_samples": calibration_samples_count,
+            "is_synthetic": is_synthetic,
+            "data_source": "synthetic_demo" if is_synthetic else "live_open_meteo",
+            "timings": {
+                "fetch_seconds": fetch_seconds,
+                "feature_engineering_seconds": feature_engineering_seconds,
+                "train_seconds": train_seconds,
+                "calibration_seconds": calibration_seconds,
+                "forecast_seconds": forecast_seconds,
+                "total_seconds": total_seconds,
+            }
+        }
 
-    # Calculate basic summary
-    avg_pred = round(float(np.mean([p["predicted_pm25"] for p in predictions])), 1)
-    min_pred = min(p["predicted_pm25"] for p in predictions)
-    max_pred = max(p["predicted_pm25"] for p in predictions)
-    latest_history = round(current_pm25_val, 1)
+        if is_synthetic:
+            result["warning"] = "Demonstration data generated synthetically because upstream observations are unavailable."
 
-    result = {
-        "status": "success",
-        "latitude": lat,
-        "longitude": lon,
-        "training_samples": len(train_df),
-        "days_trained": 92,
-        "current_time": last_timestamp.strftime("%Y-%m-%dT%H:%M"),
-        "current_display_time": last_timestamp.strftime("%I:%M %p"),
-        "current_pm25": latest_history,
-        "forecast_average": avg_pred,
-        "forecast_min": min_pred,
-        "forecast_max": max_pred,
-        "forecast": predictions,
-        "interval_method": interval_method,
-        "nominal_coverage": nominal_coverage,
-        "interval_label": interval_label,
-        "calibration_samples": calibration_samples_count,
-        "is_synthetic": is_synthetic,
-        "data_source": "synthetic_demo" if is_synthetic else "live_open_meteo"
-    }
+        # Cache trained model AND prediction result
+        MODEL_CACHE[cache_key] = {
+            "timestamp": time.time(),
+            "model": model,
+            "data": result
+        }
 
-    if is_synthetic:
-        result["warning"] = "Demonstration data generated synthetically because upstream observations are unavailable."
-
-    # Cache trained model AND prediction result
-    MODEL_CACHE[cache_key] = {
-        "timestamp": now,
-        "model": model,
-        "data": result
-    }
-
-    return result
+        return result

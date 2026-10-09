@@ -14,7 +14,7 @@ interface SearchBarProps {
   onSelect: (lat: number, lon: number, displayName?: string) => void;
 }
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
   const [query, setQuery] = useState<string>('');

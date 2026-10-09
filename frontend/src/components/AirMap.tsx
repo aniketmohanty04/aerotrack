@@ -32,7 +32,7 @@ const createCustomMarker = (color: string = '#06b6d4') => {
   });
 };
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // Map click listener hook
 const MapClickHandler: React.FC<{ onSelect: (lat: number, lon: number, displayName?: string) => void }> = ({ onSelect }) => {

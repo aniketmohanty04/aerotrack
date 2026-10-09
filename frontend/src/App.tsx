@@ -30,7 +30,7 @@ const PRESET_LOCATIONS: LocationPreset[] = [
   { name: 'Paris', lat: 48.8566, lon: 2.3522, country: 'France' },
 ];
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 const formatCoords = (latitude: number, longitude: number): string => {
   const latDir = latitude >= 0 ? 'N' : 'S';
@@ -57,7 +57,7 @@ export const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
-  // Fetch all 3 API calls using Promise.allSettled so partial endpoint failures do not crash the other components
+  // Fetch all 3 endpoints concurrently with independent state updates for instant rendering
   const fetchAllData = useCallback(async (targetLat: number, targetLon: number) => {
     setIsAirQualityLoading(true);
     setIsTrendsLoading(true);
@@ -65,35 +65,37 @@ export const App: React.FC = () => {
     setError(null);
     setForecastError(null);
 
-    try {
-      const results = await Promise.allSettled([
-        axios.get<AirQualityData>(`${API_BASE}/api/air-quality/${targetLat}/${targetLon}`),
-        axios.get<TrendData>(`${API_BASE}/api/trends/${targetLat}/${targetLon}`),
-        axios.get<ForecastData>(`${API_BASE}/api/predict/${targetLat}/${targetLon}`),
-      ]);
-
-      const [aqResult, trendsResult, forecastResult] = results;
-      let failureErr: any = null;
-
-      // Handle air quality
-      if (aqResult.status === 'fulfilled') {
-        setAirQuality(aqResult.value.data);
-      } else {
-        failureErr = failureErr || aqResult.reason;
+    // 1. Live Air Quality telemetry (fastest: ~150-250ms)
+    const pAirQuality = axios
+      .get<AirQualityData>(`${API_BASE}/api/air-quality/${targetLat}/${targetLon}`)
+      .then((res) => {
+        setAirQuality(res.data);
+        setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      })
+      .catch((err) => {
         setAirQuality(null);
-      }
+        if (err.response?.status === 400) {
+          setError("Invalid location. Please click somewhere within the valid map range.");
+        } else if (err.response?.status && err.response.status >= 500) {
+          setError("Server error. Please try again in a moment.");
+        } else {
+          setError("Failed to fetch air quality data. Check your connection.");
+        }
+      })
+      .finally(() => setIsAirQualityLoading(false));
 
-      // Handle trends
-      if (trendsResult.status === 'fulfilled') {
-        setTrends(trendsResult.value.data);
-      } else {
-        failureErr = failureErr || trendsResult.reason;
-        setTrends(null);
-      }
+    // 2. 7-Day Historical Trends (~200-350ms)
+    const pTrends = axios
+      .get<TrendData>(`${API_BASE}/api/trends/${targetLat}/${targetLon}`)
+      .then((res) => setTrends(res.data))
+      .catch(() => setTrends(null))
+      .finally(() => setIsTrendsLoading(false));
 
-      // Handle ML forecast (isolate forecast failures so live telemetry and trends remain visible)
-      if (forecastResult.status === 'fulfilled') {
-        const fData = forecastResult.value.data;
+    // 3. 24-Hour ML PM2.5 Forecast with Split Conformal Intervals (~1-3s)
+    const pForecast = axios
+      .get<ForecastData>(`${API_BASE}/api/predict/${targetLat}/${targetLon}`)
+      .then((res) => {
+        const fData = res.data;
         if (fData.status === 'error') {
           setForecast(null);
           setForecastError((fData as any).message || 'Forecast unavailable.');
@@ -101,42 +103,20 @@ export const App: React.FC = () => {
           setForecast(fData);
           setForecastError(null);
         }
-      } else {
-        const errResp = forecastResult.reason?.response?.data;
+      })
+      .catch((err) => {
+        const errResp = err.response?.data;
         const errMsg =
           errResp?.message ||
           errResp?.detail?.message ||
           (typeof errResp?.detail === 'string' ? errResp.detail : null) ||
           'Historical air quality observations are unavailable or insufficient for this location.';
-        console.warn('ML forecast unavailable:', errMsg);
         setForecast(null);
         setForecastError(errMsg);
-      }
+      })
+      .finally(() => setIsForecastLoading(false));
 
-      if (failureErr) {
-        if (failureErr.response?.status === 400) {
-          setError("Invalid location. Please click somewhere within the valid map range.");
-        } else if (failureErr.response?.status && failureErr.response.status >= 500) {
-          setError("Server error. Please try again in a moment.");
-        } else {
-          setError("Failed to fetch air quality data. Check your connection.");
-        }
-      } else {
-        setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      }
-    } catch (err: any) {
-      if (err.response?.status === 400) {
-        setError("Invalid location. Please click somewhere within the valid map range.");
-      } else if (err.response?.status && err.response.status >= 500) {
-        setError("Server error. Please try again in a moment.");
-      } else {
-        setError("Failed to fetch air quality data. Check your connection.");
-      }
-    } finally {
-      setIsAirQualityLoading(false);
-      setIsTrendsLoading(false);
-      setIsForecastLoading(false);
-    }
+    await Promise.allSettled([pAirQuality, pTrends, pForecast]);
   }, []);
 
   // Handle location update with optional displayName

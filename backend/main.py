@@ -27,10 +27,14 @@ except ImportError:
         InsufficientDataError,
         ModelTrainingError
     )
-from fastapi.responses import JSONResponse
+import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, FileResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("airquality-backend")
+
+FRONTEND_DIST = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
 
 app = FastAPI(
     title="Air Quality Tracking & ML Forecast API",
@@ -50,6 +54,28 @@ app.add_middleware(
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
+    index_file = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {
+        "name": "AeroTrack Air Quality & Forecasting API",
+        "status": "online",
+        "docs": "/docs",
+        "frontend": "http://localhost:5173",
+        "endpoints": {
+            "health": "/api/health",
+            "info": "/api/info",
+            "air_quality": "/api/air-quality/{lat}/{lon}",
+            "trends": "/api/trends/{lat}/{lon}",
+            "predict": "/api/predict/{lat}/{lon}",
+            "search": "/api/search?q={query}",
+            "reverse_geocode": "/api/reverse-geocode/{lat}/{lon}"
+        }
+    }
+
+
+@app.api_route("/api/info", methods=["GET", "HEAD"])
+def read_api_info():
     return {
         "name": "AeroTrack Air Quality & Forecasting API",
         "status": "online",
@@ -697,6 +723,11 @@ async def search_places(q: str = Query(..., min_length=1)):
             "type": result.get("type"),
         })
     return parsed_results
+
+
+assets_dir = os.path.join(FRONTEND_DIST, "assets")
+if os.path.exists(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 
 if __name__ == "__main__":
