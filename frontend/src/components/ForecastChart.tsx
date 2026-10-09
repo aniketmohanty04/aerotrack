@@ -250,6 +250,8 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
 
   const nowTime = nowPoint.display_time;
 
+  const isConformal = data.interval_method === 'split_conformal_prediction';
+
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const point = payload[0].payload;
@@ -265,7 +267,7 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
           </div>
           {/* Line 2 */}
           <div className="text-xs text-slate-200 flex items-center gap-1">
-            <span>Estimate Range: {point.lower_bound} to {point.upper_bound}</span>
+            <span>{isConformal ? '90% Conformal Interval' : 'Estimate Range'}: {point.lower_bound} to {point.upper_bound}</span>
             <Ugm3Unit iconSize="w-2.5 h-2.5" />
           </div>
         </div>
@@ -334,7 +336,9 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
 
           {/* Sub-header explaining the curve and band */}
           <p className="text-xs text-slate-400">
-            The solid line is the most likely value. The shaded band shows the range of possible outcomes.
+            {isConformal
+              ? 'The solid line is the expected value. The shaded band is a 90% split-conformal prediction interval calibrated against chronological holdout residuals.'
+              : 'The solid line is the forecast. The shaded band shows estimated uncertainty bounds (uncalibrated heuristic).'}
           </p>
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 pt-0.5">
@@ -347,6 +351,14 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
                 ? "Simulated Demo Observations"
                 : `Trained on ${days_trained} days (${training_samples} hourly observations)`}
             </span>
+            {isConformal && data.calibration_samples && (
+              <>
+                <span className="text-slate-400">•</span>
+                <span className="text-purple-300">
+                  {data.calibration_samples} Calib Windows (90% Nominal)
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -368,18 +380,26 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
           <span className="text-[10px] text-slate-400 block mt-0.5">Expected mean</span>
         </div>
         <div>
-          <span className="text-[11px] text-slate-400 block font-medium">Lower Estimate</span>
+          <span className="text-[11px] text-slate-400 block font-medium">
+            {isConformal ? 'Lower Bound (90% PI)' : 'Lower Estimate'}
+          </span>
           <span className="text-sm sm:text-base font-bold text-emerald-400 flex items-center justify-center gap-1">
             {p10Min} <Ugm3Unit iconSize="w-2.5 h-2.5" />
           </span>
-          <span className="text-[10px] text-slate-400 block mt-0.5">Heuristic range</span>
+          <span className="text-[10px] text-slate-400 block mt-0.5">
+            {isConformal ? 'Conformal (90%)' : 'Heuristic range'}
+          </span>
         </div>
         <div>
-          <span className="text-[11px] text-slate-400 block font-medium">Upper Estimate</span>
+          <span className="text-[11px] text-slate-400 block font-medium">
+            {isConformal ? 'Upper Bound (90% PI)' : 'Upper Estimate'}
+          </span>
           <span className="text-sm sm:text-base font-bold text-rose-400 flex items-center justify-center gap-1">
             {p90Max} <Ugm3Unit iconSize="w-2.5 h-2.5" />
           </span>
-          <span className="text-[10px] text-slate-400 block mt-0.5">Heuristic range</span>
+          <span className="text-[10px] text-slate-400 block mt-0.5">
+            {isConformal ? 'Conformal (90%)' : 'Heuristic range'}
+          </span>
         </div>
       </div>
 
@@ -489,11 +509,13 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
         <span><span style={{ color: '#10b981', fontWeight: 600 }}>—</span> Safe Limit: 15 µg/m³ (WHO Guideline)</span>
         <span><span style={{ color: '#f59e0b', fontWeight: 600 }}>—</span> Caution Limit: 35 µg/m³ (Moderate Threshold)</span>
         <span><span style={{ color: '#22d3ee', fontWeight: 600 }}>━━</span> Predicted PM2.5 (ML Forecast)</span>
-        <span><span style={{ color: '#a78bfa', fontWeight: 600 }}>░</span> Estimate Range</span>
+        <span><span style={{ color: '#a78bfa', fontWeight: 600 }}>░</span> {isConformal ? '90% Conformal Interval' : 'Estimate Range'}</span>
       </div>
 
       <div className="text-[11px] text-slate-400 text-center pt-1">
-        Predictions generated autoregressively using XGBoost with engineered lag and cyclical features.
+        {isConformal
+          ? 'Predictions generated autoregressively using XGBoost. Uncertainty bands calibrated via Split Conformal Prediction against multi-step holdout residuals.'
+          : 'Predictions generated autoregressively using XGBoost with engineered lag and cyclical features.'}
       </div>
     </div>
   );

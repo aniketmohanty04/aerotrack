@@ -28,14 +28,18 @@ try:
         engineer_features,
         get_feature_columns,
         fetch_historical_air_quality,
-        normalize_coordinates
+        normalize_coordinates,
+        calibrate_conformal_quantiles,
+        compute_prediction_interval
     )
 except ImportError:
     from ml_model import (
         engineer_features,
         get_feature_columns,
         fetch_historical_air_quality,
-        normalize_coordinates
+        normalize_coordinates,
+        calibrate_conformal_quantiles,
+        compute_prediction_interval
     )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -261,7 +265,23 @@ def evaluate_location_dataset(
     )
     model.fit(X_train, y_train)
 
-    # 4. Walk-Forward 24-Hour Autoregressive Evaluation on Test Set
+    # 4. Calibrate Conformal Prediction Intervals on Validation partition (holdout calibration set)
+    val_start_idx = val_df.index[0]
+    val_end_idx = val_df.index[-1]
+    conformal_quantiles, calib_windows = calibrate_conformal_quantiles(
+        model=model,
+        history_df=df,
+        calib_start_idx=val_start_idx,
+        calib_end_idx=val_end_idx,
+        feature_cols=feature_cols,
+        target_col=target_col,
+        horizon=horizon,
+        alpha=0.10,
+        stride_hours=4
+    )
+    logger.info(f"Conformal calibration completed for {city_name}: {calib_windows} windows evaluated.")
+
+    # 5. Walk-Forward 24-Hour Autoregressive Evaluation on Untouched Test Set
     test_start_idx = test_df.index[0]
     total_test_hours = len(test_df)
 
@@ -276,9 +296,20 @@ def evaluate_location_dataset(
         h: {"y_true": [], "y_xgb": [], "y_persist": []} for h in range(1, horizon + 1)
     }
 
+    # Interval evaluation records
+    conf_cov_by_h: Dict[int, List[bool]] = {h: [] for h in range(1, horizon + 1)}
+    conf_w_by_h: Dict[int, List[float]] = {h: [] for h in range(1, horizon + 1)}
+    heur_cov_by_h: Dict[int, List[bool]] = {h: [] for h in range(1, horizon + 1)}
+    heur_w_by_h: Dict[int, List[float]] = {h: [] for h in range(1, horizon + 1)}
+
     all_y_true: List[float] = []
     all_y_xgb: List[float] = []
     all_y_persist: List[float] = []
+
+    all_conf_cov: List[bool] = []
+    all_conf_w: List[float] = []
+    all_heur_cov: List[bool] = []
+    all_heur_w: List[float] = []
 
     for origin_idx in eval_origins:
         # History available up to origin T
@@ -289,6 +320,7 @@ def evaluate_location_dataset(
             continue
 
         latest_observed = float(history_up_to_origin.iloc[-1]["pm25"])
+        rolling_std_24 = float(np.std(history_up_to_origin[target_col].values[-24:])) if len(history_up_to_origin) >= 24 else 0.0
 
         # Autoregressive multi-step XGBoost predictions
         xgb_preds = run_autoregressive_rollout(model, history_up_to_origin, feature_cols, steps=horizon)
@@ -308,7 +340,34 @@ def evaluate_location_dataset(
             all_y_xgb.append(yx)
             all_y_persist.append(yp)
 
-    # 5. Compute Metrics
+            # Conformal interval evaluation
+            q_step = conformal_quantiles.get(step, 0.0)
+            l_conf = max(0.0, round(yx - q_step, 1))
+            u_conf = max(l_conf, round(yx + q_step, 1))
+            c_cov = (yt >= l_conf) and (yt <= u_conf)
+            c_w = round(u_conf - l_conf, 1)
+
+            conf_cov_by_h[step].append(c_cov)
+            conf_w_by_h[step].append(c_w)
+            all_conf_cov.append(c_cov)
+            all_conf_w.append(c_w)
+
+            # Heuristic interval evaluation
+            l_heur, u_heur, _ = compute_prediction_interval(
+                pred_val=yx,
+                step=step,
+                conformal_quantiles=None,
+                rolling_std_24=rolling_std_24
+            )
+            h_cov = (yt >= l_heur) and (yt <= u_heur)
+            h_w = round(u_heur - l_heur, 1)
+
+            heur_cov_by_h[step].append(h_cov)
+            heur_w_by_h[step].append(h_w)
+            all_heur_cov.append(h_cov)
+            all_heur_w.append(h_w)
+
+    # 6. Compute Error Metrics
     overall_xgb_metrics = calculate_metrics(np.array(all_y_true), np.array(all_y_xgb))
     overall_persist_metrics = calculate_metrics(np.array(all_y_true), np.array(all_y_persist))
 
@@ -342,6 +401,30 @@ def evaluate_location_dataset(
                 "skill_score": h_skill
             }
 
+    # Interval evaluation summary
+    interval_evaluation = {
+        "nominal_coverage_target": 0.90,
+        "calibration_windows_count": calib_windows,
+        "conformal_quantiles": {str(k): v for k, v in conformal_quantiles.items()},
+        "overall_24h": {
+            "conformal_coverage": round(float(np.mean(all_conf_cov)) * 100.0, 1) if all_conf_cov else 0.0,
+            "conformal_mean_width": round(float(np.mean(all_conf_w)), 1) if all_conf_w else 0.0,
+            "heuristic_coverage": round(float(np.mean(all_heur_cov)) * 100.0, 1) if all_heur_cov else 0.0,
+            "heuristic_mean_width": round(float(np.mean(all_heur_w)), 1) if all_heur_w else 0.0,
+        },
+        "lead_time_breakdown": {
+            f"lead_{h}h": {
+                "lead_hours": h,
+                "conformal_coverage": round(float(np.mean(conf_cov_by_h[h])) * 100.0, 1) if conf_cov_by_h[h] else 0.0,
+                "conformal_mean_width": round(float(np.mean(conf_w_by_h[h])), 1) if conf_w_by_h[h] else 0.0,
+                "conformal_margin_q": conformal_quantiles.get(h, 0.0),
+                "heuristic_coverage": round(float(np.mean(heur_cov_by_h[h])) * 100.0, 1) if heur_cov_by_h[h] else 0.0,
+                "heuristic_mean_width": round(float(np.mean(heur_w_by_h[h])), 1) if heur_w_by_h[h] else 0.0,
+            }
+            for h in [1, 6, 12, 24]
+        }
+    }
+
     return {
         "city": city_name,
         "dataset_summary": {
@@ -363,7 +446,8 @@ def evaluate_location_dataset(
             "persistence_baseline": overall_persist_metrics,
             "skill_score_vs_persistence": skill_score
         },
-        "lead_time_breakdown": lead_time_breakdown
+        "lead_time_breakdown": lead_time_breakdown,
+        "interval_evaluation": interval_evaluation
     }
 
 
@@ -491,6 +575,34 @@ def generate_markdown_report(results: Dict[str, Any], filepath: str):
                 f"| **+{h}h** | {h_data['xgb_mae']} µg/m³ | {h_data['persistence_mae']} µg/m³ | "
                 f"{h_data['xgb_rmse']} µg/m³ | {h_data['persistence_rmse']} µg/m³ | {h_data['skill_score']:+.4f} |"
             )
+
+        interval_data = data.get("interval_evaluation", {})
+        if interval_data:
+            ov = interval_data.get("overall_24h", {})
+            lead_int = interval_data.get("lead_time_breakdown", {})
+            lines.extend([
+                "",
+                "#### Prediction Interval Evaluation (90% Nominal Target)",
+                "",
+                f"- **Calibration Strategy**: Split Conformal Prediction calibrated on validation holdout partition ({interval_data.get('calibration_windows_count', 0)} multi-step windows).",
+                "- **Nominal Coverage Target**: 90.0% ($\\alpha = 0.10$).",
+                "",
+                "| Uncertainty Method | Empirical 24h Coverage | Mean Interval Width | Calibration Strategy |",
+                "| :--- | :---: | :---: | :--- |",
+                f"| **Split Conformal Prediction** | **{ov.get('conformal_coverage', 0.0)}%** | **{ov.get('conformal_mean_width', 0.0)} µg/m³** | Distribution-free, calibrated on holdout residuals |",
+                f"| Heuristic Uncertainty Band | {ov.get('heuristic_coverage', 0.0)}% | {ov.get('heuristic_mean_width', 0.0)} µg/m³ | Uncalibrated heuristic (step + rolling variance) |",
+                "",
+                "##### Interval Metrics by Forecast Lead Time ($h$ hours ahead)",
+                "",
+                "| Lead Time | Conformal 90% Coverage | Conformal Margin $q^{(h)}$ | Heuristic Coverage | Heuristic Mean Width |",
+                "| :---: | :---: | :---: | :---: | :---: |"
+            ])
+            for key, h_dict in lead_int.items():
+                h = h_dict["lead_hours"]
+                lines.append(
+                    f"| **+{h}h** | **{h_dict['conformal_coverage']}%** | ±{h_dict['conformal_margin_q']} µg/m³ | "
+                    f"{h_dict['heuristic_coverage']}% | {h_dict['heuristic_mean_width']} µg/m³ |"
+                )
 
         lines.extend(["", ""])
 

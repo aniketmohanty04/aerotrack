@@ -72,6 +72,7 @@ export interface ForecastPoint {
   predicted_pm25: number;
   lower_bound: number;
   upper_bound: number;
+  interval_method?: string;
 }
 
 export interface ForecastData {
@@ -87,6 +88,10 @@ export interface ForecastData {
   forecast_min: number;
   forecast_max: number;
   forecast: ForecastPoint[];
+  interval_method?: string;
+  nominal_coverage?: number | null;
+  interval_label?: string;
+  calibration_samples?: number;
   is_synthetic?: boolean;
   data_source?: string;
   warning?: string;
