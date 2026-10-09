@@ -45,8 +45,9 @@ const MapClickHandler: React.FC<{ onSelect: (lat: number, lon: number, displayNa
       let displayName = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
       try {
         const res = await axios.get(`${API_BASE}/api/reverse-geocode/${lat}/${lon}`);
-        const { city, region, country } = res.data;
-        if (city) displayName = [city, region, country].filter(Boolean).join(", ");
+        const { city, region, country } = res.data || {};
+        const parts = [city, region, country].filter(Boolean);
+        if (parts.length > 0) displayName = parts.join(", ");
       } catch (err) {
         /* keep lat/lon fallback */
       }

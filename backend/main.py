@@ -415,16 +415,41 @@ async def get_prediction(lat: float, lon: float):
 async def reverse_geocode(lat: float, lon: float) -> dict:
     url = "https://api.bigdatacloud.net/data/reverse-geocode-client"
     params = {"latitude": lat, "longitude": lon, "localityLanguage": "en"}
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(url, params=params)
-        if r.status_code != 200:
-            return {"city": None, "region": None, "country": None}
-        data = r.json()
-        return {
-            "city": data.get("city") or data.get("locality"),
-            "region": data.get("principalSubdivision"),
-            "country": data.get("countryName"),
-        }
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            r = await client.get(url, params=params)
+            if r.status_code == 200:
+                data = r.json()
+                city = data.get("city") or data.get("locality")
+                region = data.get("principalSubdivision")
+                country = data.get("countryName")
+                if city or region or country:
+                    return {
+                        "city": city,
+                        "region": region,
+                        "country": country,
+                    }
+    except Exception as e:
+        logger.warning(f"BigDataCloud reverse geocode error: {e}")
+
+    # Fallback to Nominatim reverse geocode
+    try:
+        nom_url = "https://nominatim.openstreetmap.org/reverse"
+        nom_params = {"lat": lat, "lon": lon, "format": "json", "zoom": 10}
+        nom_headers = {"User-Agent": "AeroTrack/1.0 (air quality demo project)"}
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            r = await client.get(nom_url, params=nom_params, headers=nom_headers)
+            if r.status_code == 200:
+                nom_data = r.json()
+                addr = nom_data.get("address", {})
+                city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality") or addr.get("county")
+                region = addr.get("state") or addr.get("region")
+                country = addr.get("country")
+                return {"city": city, "region": region, "country": country}
+    except Exception as e:
+        logger.warning(f"Nominatim reverse geocode fallback error: {e}")
+
+    return {"city": None, "region": None, "country": None}
 
 
 @app.get("/api/reverse-geocode/{lat}/{lon}")
