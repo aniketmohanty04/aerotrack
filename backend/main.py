@@ -52,25 +52,14 @@ app.add_middleware(
 )
 
 
-@app.api_route("/", methods=["GET", "HEAD"])
+@app.get("/")
 def read_root():
-    index_file = os.path.join(FRONTEND_DIST, "index.html")
-    if os.path.exists(index_file):
-        return FileResponse(index_file)
     return {
-        "name": "AeroTrack Air Quality & Forecasting API",
+        "name": "AeroTrack API",
         "status": "online",
         "docs": "/docs",
-        "frontend": "http://localhost:5173",
-        "endpoints": {
-            "health": "/api/health",
-            "info": "/api/info",
-            "air_quality": "/api/air-quality/{lat}/{lon}",
-            "trends": "/api/trends/{lat}/{lon}",
-            "predict": "/api/predict/{lat}/{lon}",
-            "search": "/api/search?q={query}",
-            "reverse_geocode": "/api/reverse-geocode/{lat}/{lon}"
-        }
+        "health": "/api/health",
+        "frontend": "https://aerotrack-three.vercel.app/"
     }
 
 
