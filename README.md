@@ -10,7 +10,7 @@
 - **Backend API:** https://aerotrack-backend-1tlt.onrender.com
 - **API Documentation:** https://aerotrack-backend-1tlt.onrender.com/docs
 
-> **Note:** The backend is hosted on Render's free tier and sleeps after 15 minutes of inactivity. The first request after a period of inactivity may take 20–30 seconds to warm up.
+> **Note:** The backend runs on Render's free tier, which normally sleeps after 15 minutes of inactivity. An UptimeRobot monitor pings the health endpoint every 5 minutes to keep it warm 24/7, so users experience sub-second response times.
 
 ---
 
