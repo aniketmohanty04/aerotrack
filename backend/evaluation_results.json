@@ -1,5 +1,5 @@
 {
-  "evaluation_timestamp": "2026-10-09T17:29:14Z",
+  "evaluation_timestamp": "2026-10-09T18:19:50Z",
   "methodology": {
     "model_type": "XGBoost Regressor (Autoregressive Recursive 24-Hour Rollout)",
     "split_strategy": "Chronological (70% Train, 15% Validation, 15% Test)",
@@ -25,147 +25,150 @@
       "rolling_mean_24",
       "rolling_std_24"
     ],
-    "temporal_leakage_prevention": "Strict shift(1) lag and rolling window features; zero random shuffling."
+    "temporal_leakage_prevention": "Strict shift(1) lag and rolling window features; zero random shuffling.",
+    "data_provenance": "Completed historical observations strictly at or prior to cutoff time (zero future provider forecasts in test set)."
   },
   "cities": {
     "New Delhi, India": {
       "city": "New Delhi, India",
       "dataset_summary": {
-        "total_observations": 2256,
+        "total_observations": 2232,
         "start_time": "2026-07-09 00:00:00",
-        "end_time": "2026-10-10 23:00:00",
-        "train_samples": 1579,
+        "end_time": "2026-10-09 23:00:00",
+        "train_samples": 1562,
         "train_start": "2026-07-09 00:00:00",
-        "train_end": "2026-09-12 18:00:00",
-        "val_samples": 338,
-        "test_samples": 339,
-        "test_start": "2026-09-26 21:00:00",
-        "test_end": "2026-10-10 23:00:00",
-        "eval_windows_evaluated": 14,
-        "total_forecast_points_evaluated": 336
+        "train_end": "2026-09-12 01:00:00",
+        "val_samples": 335,
+        "test_samples": 335,
+        "test_start": "2026-09-26 01:00:00",
+        "test_end": "2026-10-09 23:00:00",
+        "cutoff_time": "2026-10-09 23:49:55.018054",
+        "future_provider_forecasts_excluded": true,
+        "eval_windows_evaluated": 13,
+        "total_forecast_points_evaluated": 312
       },
       "overall_24h_evaluation": {
         "xgboost": {
-          "mae": 28.23,
-          "rmse": 38.67,
-          "r2": 0.5925
+          "mae": 31.28,
+          "rmse": 40.57,
+          "r2": 0.5272
         },
         "persistence_baseline": {
-          "mae": 38.23,
-          "rmse": 52.05,
-          "r2": 0.2616
+          "mae": 40.62,
+          "rmse": 53.96,
+          "r2": 0.1638
         },
-        "skill_score_vs_persistence": 0.2571
+        "skill_score_vs_persistence": 0.2481
       },
       "lead_time_breakdown": {
         "lead_1h": {
           "lead_hours": 1,
-          "eval_samples": 14,
-          "xgb_mae": 2.64,
-          "xgb_rmse": 3.37,
-          "xgb_r2": 0.9975,
-          "persistence_mae": 6.37,
-          "persistence_rmse": 7.71,
-          "skill_score": 0.5629
+          "eval_samples": 13,
+          "xgb_mae": 2.66,
+          "xgb_rmse": 3.47,
+          "xgb_r2": 0.9973,
+          "persistence_mae": 6.84,
+          "persistence_rmse": 8.0,
+          "skill_score": 0.5662
         },
         "lead_6h": {
           "lead_hours": 6,
-          "eval_samples": 14,
-          "xgb_mae": 19.97,
-          "xgb_rmse": 27.94,
-          "xgb_r2": 0.6337,
-          "persistence_mae": 37.66,
-          "persistence_rmse": 50.09,
-          "skill_score": 0.4422
+          "eval_samples": 13,
+          "xgb_mae": 22.88,
+          "xgb_rmse": 30.35,
+          "xgb_r2": 0.5643,
+          "persistence_mae": 40.18,
+          "persistence_rmse": 51.96,
+          "skill_score": 0.4159
         },
         "lead_12h": {
           "lead_hours": 12,
-          "eval_samples": 14,
-          "xgb_mae": 33.94,
-          "xgb_rmse": 45.63,
-          "xgb_r2": 0.4419,
-          "persistence_mae": 42.84,
-          "persistence_rmse": 57.26,
-          "skill_score": 0.2031
+          "eval_samples": 13,
+          "xgb_mae": 36.94,
+          "xgb_rmse": 46.23,
+          "xgb_r2": 0.4192,
+          "persistence_mae": 45.22,
+          "persistence_rmse": 59.33,
+          "skill_score": 0.2208
         },
         "lead_24h": {
           "lead_hours": 24,
-          "eval_samples": 14,
-          "xgb_mae": 43.96,
-          "xgb_rmse": 51.4,
-          "xgb_r2": 0.447,
-          "persistence_mae": 54.05,
-          "persistence_rmse": 64.11,
-          "skill_score": 0.1983
+          "eval_samples": 13,
+          "xgb_mae": 49.83,
+          "xgb_rmse": 56.14,
+          "xgb_r2": 0.2661,
+          "persistence_mae": 57.02,
+          "persistence_rmse": 66.4,
+          "skill_score": 0.1545
         }
       },
       "interval_evaluation": {
         "nominal_coverage_target": 0.9,
-        "calibration_windows_count": 79,
+        "calibration_windows_count": 78,
         "conformal_quantiles": {
-          "1": 19.0,
-          "2": 23.42,
-          "3": 31.72,
-          "4": 39.9,
-          "5": 48.74,
-          "6": 53.45,
-          "7": 55.87,
-          "8": 58.66,
-          "9": 61.92,
-          "10": 61.92,
-          "11": 68.49,
-          "12": 81.5,
-          "13": 81.5,
-          "14": 81.5,
-          "15": 81.5,
-          "16": 81.5,
-          "17": 81.69,
-          "18": 81.69,
-          "19": 81.69,
-          "20": 81.69,
-          "21": 81.69,
-          "22": 84.61,
-          "23": 84.61,
-          "24": 85.33
+          "1": 23.92,
+          "2": 25.98,
+          "3": 33.65,
+          "4": 44.05,
+          "5": 48.12,
+          "6": 53.24,
+          "7": 60.31,
+          "8": 64.65,
+          "9": 66.06,
+          "10": 66.06,
+          "11": 69.56,
+          "12": 71.98,
+          "13": 71.98,
+          "14": 71.98,
+          "15": 71.98,
+          "16": 75.33,
+          "17": 75.33,
+          "18": 75.33,
+          "19": 75.33,
+          "20": 75.33,
+          "21": 75.33,
+          "22": 77.02,
+          "23": 78.86,
+          "24": 78.86
         },
         "overall_24h": {
-          "conformal_coverage": 93.5,
-          "conformal_mean_width": 126.1,
-          "heuristic_coverage": 71.4,
-          "heuristic_mean_width": 92.9
+          "conformal_coverage": 92.9,
+          "conformal_mean_width": 123.5,
+          "heuristic_coverage": 71.8,
+          "heuristic_mean_width": 98.0
         },
         "lead_time_breakdown": {
           "lead_1h": {
             "lead_hours": 1,
             "conformal_coverage": 100.0,
-            "conformal_mean_width": 38.0,
-            "conformal_margin_q": 19.0,
+            "conformal_mean_width": 47.6,
+            "conformal_margin_q": 23.92,
             "heuristic_coverage": 100.0,
-            "heuristic_mean_width": 48.4
+            "heuristic_mean_width": 51.2
           },
           "lead_6h": {
             "lead_hours": 6,
-            "conformal_coverage": 92.9,
-            "conformal_mean_width": 102.6,
-            "conformal_margin_q": 53.45,
-            "heuristic_coverage": 64.3,
-            "heuristic_mean_width": 58.6
+            "conformal_coverage": 84.6,
+            "conformal_mean_width": 103.3,
+            "conformal_margin_q": 53.24,
+            "heuristic_coverage": 61.5,
+            "heuristic_mean_width": 61.6
           },
           "lead_12h": {
             "lead_hours": 12,
-            "conformal_coverage": 92.9,
-            "conformal_mean_width": 151.7,
-            "conformal_margin_q": 81.5,
-            "heuristic_coverage": 57.1,
-            "heuristic_mean_width": 87.0
+            "conformal_coverage": 92.3,
+            "conformal_mean_width": 137.8,
+            "conformal_margin_q": 71.98,
+            "heuristic_coverage": 53.8,
+            "heuristic_mean_width": 91.4
           },
           "lead_24h": {
             "lead_hours": 24,
-            "conformal_coverage": 92.9,
-            "conformal_mean_width": 161.6,
-            "conformal_margin_q": 85.33,
-            "heuristic_coverage": 64.3,
-            "heuristic_mean_width": 148.2
+            "conformal_coverage": 92.3,
+            "conformal_mean_width": 153.8,
+            "conformal_margin_q": 78.86,
+            "heuristic_coverage": 76.9,
+            "heuristic_mean_width": 161.8
           }
         }
       }
