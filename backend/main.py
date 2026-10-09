@@ -412,54 +412,58 @@ async def get_prediction(lat: float, lon: float):
         raise HTTPException(status_code=500, detail=f"Forecast training failed: {str(e)}")
 
 
+nominatim_lock = asyncio.Lock()
+last_nominatim_call = 0.0
+
+
 async def reverse_geocode(lat: float, lon: float) -> dict:
-    url = "https://api.bigdatacloud.net/data/reverse-geocode-client"
-    params = {"latitude": lat, "longitude": lon, "localityLanguage": "en"}
-    try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            r = await client.get(url, params=params)
-            if r.status_code == 200:
+    url = "https://nominatim.openstreetmap.org/reverse"
+    headers = {"User-Agent": "AeroTrack/1.0 (air quality demo project)"}
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "format": "json",
+        "accept-language": "en",
+        "zoom": 10,
+        "addressdetails": 1,
+    }
+    
+    global last_nominatim_call
+    async with nominatim_lock:
+        now = time.time()
+        elapsed = now - last_nominatim_call
+        if elapsed < 1.0:
+            await asyncio.sleep(1.0 - elapsed)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(url, params=params, headers=headers)
+                last_nominatim_call = time.time()
+                if r.status_code != 200:
+                    return {"city": None, "region": None, "country": None}
                 data = r.json()
-                city = data.get("city") or data.get("locality")
-                region = data.get("principalSubdivision")
-                country = data.get("countryName")
-                if city or region or country:
-                    return {
-                        "city": city,
-                        "region": region,
-                        "country": country,
-                    }
-    except Exception as e:
-        logger.warning(f"BigDataCloud reverse geocode error: {e}")
+        except Exception as e:
+            last_nominatim_call = time.time()
+            logger.error(f"Reverse geocode failed: {e}")
+            return {"city": None, "region": None, "country": None}
 
-    # Fallback to Nominatim reverse geocode
-    try:
-        nom_url = "https://nominatim.openstreetmap.org/reverse"
-        nom_params = {"lat": lat, "lon": lon, "format": "json", "zoom": 10}
-        nom_headers = {"User-Agent": "AeroTrack/1.0 (air quality demo project)"}
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            r = await client.get(nom_url, params=nom_params, headers=nom_headers)
-            if r.status_code == 200:
-                nom_data = r.json()
-                addr = nom_data.get("address", {})
-                city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality") or addr.get("county")
-                region = addr.get("state") or addr.get("region")
-                country = addr.get("country")
-                return {"city": city, "region": region, "country": country}
-    except Exception as e:
-        logger.warning(f"Nominatim reverse geocode fallback error: {e}")
-
-    return {"city": None, "region": None, "country": None}
+    address = data.get("address", {})
+    city = (
+        address.get("city")
+        or address.get("town")
+        or address.get("village")
+        or address.get("municipality")
+        or address.get("county")
+    )
+    region = address.get("state") or address.get("province")
+    country = address.get("country")
+    
+    return {"city": city, "region": region, "country": country}
 
 
 @app.get("/api/reverse-geocode/{lat}/{lon}")
 async def get_reverse_geocode(lat: float, lon: float):
     lat, lon = validate_coords(lat, lon)
     return await reverse_geocode(lat, lon)
-
-
-nominatim_lock = asyncio.Lock()
-last_nominatim_call = 0.0
 
 
 @app.get("/api/search")
