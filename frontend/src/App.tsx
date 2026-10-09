@@ -18,6 +18,7 @@ import {
   MapPin,
   Clock,
   Compass,
+  TrendingUp,
 } from 'lucide-react';
 
 // Preset locations for quick navigation
@@ -47,6 +48,7 @@ export const App: React.FC = () => {
   // Track active coordinates and in-flight request sequence to prevent race conditions
   const coordsRef = useRef({ lat: 28.6139, lon: 77.2090 });
   const reqIdRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Data states
   const [airQuality, setAirQuality] = useState<AirQualityData | null>(null);
@@ -65,6 +67,14 @@ export const App: React.FC = () => {
   const fetchAllData = useCallback(async (targetLat: number, targetLon: number) => {
     const currentReqId = ++reqIdRef.current;
 
+    // Immediately abort any previous in-flight requests to instantly free browser sockets
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const signal = controller.signal;
+
     // Immediately clear previous location data so old AQI never hovers or flashes on the new location
     setAirQuality(null);
     setTrends(null);
@@ -77,17 +87,22 @@ export const App: React.FC = () => {
 
     // 1. Live Air Quality telemetry (fastest: ~150-250ms)
     const pAirQuality = axios
-      .get<AirQualityData>(`${API_BASE}/api/air-quality/${targetLat}/${targetLon}`)
+      .get<AirQualityData>(`${API_BASE}/api/air-quality/${targetLat}/${targetLon}`, {
+        signal,
+        timeout: 15000,
+      })
       .then((res) => {
         if (reqIdRef.current !== currentReqId) return;
         setAirQuality(res.data);
         setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       })
       .catch((err) => {
-        if (reqIdRef.current !== currentReqId) return;
+        if (axios.isCancel(err) || reqIdRef.current !== currentReqId) return;
         setAirQuality(null);
         if (err.response?.status === 400) {
           setError("Invalid location. Please click somewhere within the valid map range.");
+        } else if (err.code === 'ECONNABORTED') {
+          setError("Air quality telemetry request timed out. Please try again.");
         } else if (err.response?.status && err.response.status >= 500) {
           setError("Server error. Please try again in a moment.");
         } else {
@@ -102,13 +117,16 @@ export const App: React.FC = () => {
 
     // 2. 7-Day Historical Trends (~200-350ms)
     const pTrends = axios
-      .get<TrendData>(`${API_BASE}/api/trends/${targetLat}/${targetLon}`)
+      .get<TrendData>(`${API_BASE}/api/trends/${targetLat}/${targetLon}`, {
+        signal,
+        timeout: 15000,
+      })
       .then((res) => {
         if (reqIdRef.current !== currentReqId) return;
         setTrends(res.data);
       })
-      .catch(() => {
-        if (reqIdRef.current !== currentReqId) return;
+      .catch((err) => {
+        if (axios.isCancel(err) || reqIdRef.current !== currentReqId) return;
         setTrends(null);
       })
       .finally(() => {
@@ -119,7 +137,10 @@ export const App: React.FC = () => {
 
     // 3. 24-Hour ML PM2.5 Forecast with Split Conformal Intervals (~1-3s)
     const pForecast = axios
-      .get<ForecastData>(`${API_BASE}/api/predict/${targetLat}/${targetLon}`)
+      .get<ForecastData>(`${API_BASE}/api/predict/${targetLat}/${targetLon}`, {
+        signal,
+        timeout: 40000,
+      })
       .then((res) => {
         if (reqIdRef.current !== currentReqId) return;
         const fData = res.data;
@@ -132,13 +153,15 @@ export const App: React.FC = () => {
         }
       })
       .catch((err) => {
-        if (reqIdRef.current !== currentReqId) return;
+        if (axios.isCancel(err) || reqIdRef.current !== currentReqId) return;
         const errResp = err.response?.data;
         const errMsg =
           errResp?.message ||
           errResp?.detail?.message ||
           (typeof errResp?.detail === 'string' ? errResp.detail : null) ||
-          'Historical air quality observations are unavailable or insufficient for this location.';
+          (err.code === 'ECONNABORTED'
+            ? 'Forecasting service timed out. Please retry.'
+            : 'Historical air quality observations are unavailable or insufficient for this location.');
         setForecast(null);
         setForecastError(errMsg);
       })
@@ -333,7 +356,11 @@ export const App: React.FC = () => {
             <div className="mb-2 text-xs font-semibold text-slate-300">
               Showing data for: <span className="text-white font-bold">{locationName}</span>
             </div>
-            <PollutantCards data={airQuality} isLoading={isAirQualityLoading} />
+            <PollutantCards
+              data={airQuality}
+              isLoading={isAirQualityLoading}
+              onRetry={() => fetchAllData(lat, lon)}
+            />
           </div>
         </section>
 
@@ -355,7 +382,13 @@ export const App: React.FC = () => {
               </div>
             ) : trends ? (
               <TrendChart data={trends} />
-            ) : null}
+            ) : (
+              <div className="h-[470px] rounded-2xl border border-slate-800 bg-slate-900/40 flex flex-col items-center justify-center p-6 text-center space-y-3">
+                <TrendingUp className="w-10 h-10 text-slate-600" />
+                <h3 className="text-sm font-semibold text-slate-300">7-Day Trend History Unavailable</h3>
+                <p className="text-xs text-slate-500 max-w-sm">Historical air quality observations could not be loaded for these coordinates.</p>
+              </div>
+            )}
           </div>
 
           {/* 24-Hour XGBoost Forecast Chart */}

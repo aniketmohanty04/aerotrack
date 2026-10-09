@@ -278,3 +278,78 @@ def test_search_places_distinguishes_upstream_errors(monkeypatch):
     assert res_429.status_code == 429
     assert "rate limit" in res_429.json()["detail"]
 
+
+def test_calculate_pm25_to_us_aqi_breakpoints():
+    """Verify EPA PM2.5 to US AQI piecewise linear interpolation across category breakpoints."""
+    from backend.main import calculate_pm25_to_us_aqi
+
+    # None and negative values
+    assert calculate_pm25_to_us_aqi(None) is None
+    assert calculate_pm25_to_us_aqi(-5.0) is None
+
+    # Good: 0 - 9.0 µg/m³ -> 0 - 50 AQI
+    assert calculate_pm25_to_us_aqi(0.0) == 0
+    assert calculate_pm25_to_us_aqi(4.5) == 25
+    assert calculate_pm25_to_us_aqi(9.0) == 50
+
+    # Moderate: 9.1 - 35.4 µg/m³ -> 51 - 100 AQI
+    assert calculate_pm25_to_us_aqi(9.1) == 51
+    assert calculate_pm25_to_us_aqi(35.4) == 100
+
+    # Unhealthy for Sensitive Groups: 35.5 - 55.4 µg/m³ -> 101 - 150 AQI
+    assert calculate_pm25_to_us_aqi(35.5) == 101
+    assert calculate_pm25_to_us_aqi(55.4) == 150
+
+    # Unhealthy: 55.5 - 125.4 µg/m³ -> 151 - 200 AQI
+    assert calculate_pm25_to_us_aqi(55.5) == 151
+    assert calculate_pm25_to_us_aqi(125.4) == 200
+
+    # Very Unhealthy: 125.5 - 225.4 µg/m³ -> 201 - 300 AQI
+    assert calculate_pm25_to_us_aqi(125.5) == 201
+    assert calculate_pm25_to_us_aqi(225.4) == 300
+
+    # Hazardous: 225.5+
+    assert calculate_pm25_to_us_aqi(250.0) > 300
+
+
+def test_air_quality_computes_aqi_from_pm25_when_upstream_us_aqi_null(monkeypatch):
+    """Verify that when Open-Meteo returns null for us_aqi, backend computes it from pm2_5."""
+    from backend import main
+
+    main.SHARED_AIR_CACHE.clear()
+
+    mock_raw_data = {
+        "current": {
+            "time": "2026-10-10T00:00",
+            "us_aqi": None,  # Upstream station does not provide USAQI directly
+            "european_aqi": 30,
+            "pm2_5": 36.7,
+            "pm10": 46.2,
+            "carbon_monoxide": 200.0,
+            "nitrogen_dioxide": 15.0,
+            "sulphur_dioxide": 3.0,
+            "ozone": 25.0
+        },
+        "current_units": {
+            "pm2_5": "µg/m³",
+            "pm10": "µg/m³"
+        },
+        "timezone": "Asia/Kolkata"
+    }
+
+    async def mock_fetch_raw(lat, lon):
+        return mock_raw_data
+
+    monkeypatch.setattr(main, "_fetch_open_meteo_raw", mock_fetch_raw)
+
+    res = client.get("/api/air-quality/19.2839/84.5044")
+    assert res.status_code == 200
+    data = res.json()
+
+    # Verify us_aqi is NOT None and is computed from PM2.5 (36.7 µg/m³ -> ~104 US AQI)
+    assert data["us_aqi"] is not None
+    assert data["us_aqi"] == 104
+    assert data["aqi_info"]["category"] == "Unhealthy for Sensitive Groups"
+    assert data["aqi_info"]["level"] == "unhealthy_sensitive"
+
+

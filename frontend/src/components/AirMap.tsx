@@ -45,20 +45,25 @@ const MapClickHandler: React.FC<{
   onSelectRef.current = onSelect;
   const onNameRef = useRef(onLocationNameResolved);
   onNameRef.current = onLocationNameResolved;
+  const clickCounterRef = useRef<number>(0);
 
   useMapEvents({
     async click(e) {
       const wrapped = e.latlng.wrap();
       const lat = Math.max(-89.9, Math.min(89.9, wrapped.lat));
       const lon = ((wrapped.lng + 180) % 360 + 360) % 360 - 180;
+      const currentClickId = ++clickCounterRef.current;
 
       // 1. Immediately trigger location selection and fresh data calculation
       const fallbackName = `${lat.toFixed(3)}°, ${lon.toFixed(3)}°`;
       onSelectRef.current(lat, lon, fallbackName);
 
-      // 2. Fetch reverse-geocoded place name asynchronously in the background without re-triggering data fetch
+      // 2. Fetch reverse-geocoded place name asynchronously in the background with timeout
       try {
-        const res = await axios.get(`${API_BASE}/api/reverse-geocode/${lat}/${lon}`);
+        const res = await axios.get(`${API_BASE}/api/reverse-geocode/${lat}/${lon}`, {
+          timeout: 6000,
+        });
+        if (clickCounterRef.current !== currentClickId) return;
         const { city, region, country } = res.data || {};
         const parts = [city, region, country].filter(Boolean);
         if (parts.length > 0 && onNameRef.current) {
@@ -91,7 +96,7 @@ export const AirMap: React.FC<AirMapProps> = ({
   aqiValue,
   isLoading = false,
 }) => {
-  const isCalculating = isLoading || aqiValue == null;
+  const isCalculating = isLoading;
   const markerColor = isCalculating ? '#06b6d4' : (aqiInfo?.color || '#06b6d4');
   const customIcon = createCustomMarker(markerColor);
   const markerRef = useRef<L.Marker>(null);
@@ -149,7 +154,7 @@ export const AirMap: React.FC<AirMapProps> = ({
                     Measuring real-time sensors...
                   </p>
                 </div>
-              ) : (
+              ) : aqiValue != null ? (
                 <div className="space-y-1 pt-0.5">
                   <div className="text-sm font-semibold flex items-center gap-2">
                     <span>AQI:</span>
@@ -165,6 +170,18 @@ export const AirMap: React.FC<AirMapProps> = ({
                       {aqiInfo.description}
                     </p>
                   )}
+                </div>
+              ) : (
+                <div className="space-y-1 pt-0.5">
+                  <div className="text-sm font-semibold flex items-center gap-2">
+                    <span className="text-slate-300">AQI:</span>
+                    <span className="px-2 py-0.5 rounded text-xs font-bold text-slate-300 bg-slate-800 border border-slate-700">
+                      Unavailable
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-tight">
+                    Sensor readings unavailable for this location.
+                  </p>
                 </div>
               )}
             </div>

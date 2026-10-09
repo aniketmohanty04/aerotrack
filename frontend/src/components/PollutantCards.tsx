@@ -1,10 +1,11 @@
 import React from 'react';
 import { AirQualityData, PollutantDetail } from '../types';
-import { Wind, ShieldAlert, Activity, Flame, Droplets, Sun, Gauge, Info } from 'lucide-react';
+import { Wind, ShieldAlert, Activity, Flame, Droplets, Sun, Gauge, Info, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface PollutantCardsProps {
   data?: AirQualityData | null;
   isLoading?: boolean;
+  onRetry?: () => void;
 }
 
 const getBorderColorClass = (rating: PollutantDetail['rating']) => {
@@ -127,9 +128,34 @@ const PollutantSkeleton: React.FC = () => {
   );
 };
 
-export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading }) => {
-  if (isLoading || !data) {
+export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading, onRetry }) => {
+  if (isLoading) {
     return <PollutantSkeleton />;
+  }
+
+  if (!data) {
+    return (
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-8 shadow-xl backdrop-blur-xl text-center space-y-4">
+        <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto text-amber-400">
+          <AlertCircle className="w-6 h-6" />
+        </div>
+        <div className="space-y-1">
+          <h3 className="text-base font-bold text-white">Air Quality Telemetry Unavailable</h3>
+          <p className="text-xs text-slate-400 max-w-md mx-auto">
+            Real-time sensor readings could not be retrieved from atmospheric monitoring stations for this location. Please check your connection or select another location on the map.
+          </p>
+        </div>
+        {onRetry && (
+          <button
+            onClick={onRetry}
+            className="px-4 py-2 rounded-xl text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-white transition-all shadow-md inline-flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Retry Telemetry
+          </button>
+        )}
+      </div>
+    );
   }
 
   const { us_aqi, european_aqi, aqi_info, pollutants } = data;

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Search, Loader2, MapPin, AlertCircle } from 'lucide-react';
+import { Search, Loader2, MapPin, AlertCircle, X } from 'lucide-react';
 
 interface SearchResult {
   name: string;
@@ -47,7 +47,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
       try {
         setSearchError(null);
         const url = `${API_BASE}/api/search?q=${encodeURIComponent(trimmed)}`;
-        const res = await axios.get<SearchResult[]>(url);
+        const res = await axios.get<SearchResult[]>(url, { timeout: 6000 });
         const searchResults = res.data || [];
         setResults(searchResults);
         setIsOpen(true);
@@ -133,12 +133,25 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
           className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 focus:outline-none rounded-xl pl-10 pr-10 py-2.5 text-sm text-slate-100 placeholder-slate-500 transition-all shadow-inner"
         />
 
-        {/* Loading Spinner */}
-        {isLoading && (
-          <div className="absolute right-3.5 top-1/2 -translate-y-1/2">
-            <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />
-          </div>
-        )}
+        {/* Clear Button & Loading Spinner */}
+        <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+          {query.trim().length > 0 && !isLoading && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuery('');
+                setResults([]);
+                setIsOpen(false);
+                setSearchError(null);
+              }}
+              className="p-0.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+              title="Clear search"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {isLoading && <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />}
+        </div>
       </div>
 
       {/* Autocomplete Dropdown */}

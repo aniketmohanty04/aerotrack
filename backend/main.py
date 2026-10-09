@@ -211,6 +211,45 @@ def get_rating(pollutant: str, value: Optional[float]) -> str:
 get_pollutant_rating = get_rating
 
 
+def calculate_pm25_to_us_aqi(pm25: Optional[float]) -> Optional[int]:
+    """
+    Converts PM2.5 concentration (µg/m³) to US EPA AQI using standard piecewise linear interpolation.
+    Follows US EPA AQI breakpoints:
+    0.0 - 9.0 -> 0 - 50 (Good)
+    9.1 - 35.4 -> 51 - 100 (Moderate)
+    35.5 - 55.4 -> 101 - 150 (Unhealthy for Sensitive Groups)
+    55.5 - 125.4 -> 151 - 200 (Unhealthy)
+    125.5 - 225.4 -> 201 - 300 (Very Unhealthy)
+    225.5 - 325.4 -> 301 - 400 (Hazardous)
+    325.5 - 500.4 -> 401 - 500 (Hazardous)
+    """
+    if pm25 is None:
+        return None
+    try:
+        c = round(float(pm25), 1)
+        if c < 0 or np.isnan(c) or np.isinf(c):
+            return None
+        if c <= 9.0:
+            return round(((50.0 - 0.0) / (9.0 - 0.0)) * (c - 0.0) + 0.0)
+        elif c <= 35.4:
+            return round(((100.0 - 51.0) / (35.4 - 9.1)) * (c - 9.1) + 51.0)
+        elif c <= 55.4:
+            return round(((150.0 - 101.0) / (55.4 - 35.5)) * (c - 35.5) + 101.0)
+        elif c <= 125.4:
+            return round(((200.0 - 151.0) / (125.4 - 55.5)) * (c - 55.5) + 151.0)
+        elif c <= 225.4:
+            return round(((300.0 - 201.0) / (225.4 - 125.5)) * (c - 125.5) + 201.0)
+        elif c <= 325.4:
+            return round(((400.0 - 301.0) / (325.4 - 225.5)) * (c - 225.5) + 301.0)
+        elif c <= 500.4:
+            return round(((500.0 - 401.0) / (500.4 - 325.5)) * (c - 325.5) + 401.0)
+        else:
+            return 500
+    except (ValueError, TypeError):
+        return None
+
+
+
 @app.get("/api/location/search")
 async def search_location(query: str = Query(..., min_length=2)):
     """Search coordinates by city name using Open-Meteo Geocoding API."""
@@ -309,6 +348,8 @@ async def get_air_quality(lat: float, lon: float):
         units = data.get("current_units", {})
 
         us_aqi = current.get("us_aqi")
+        if us_aqi is None and current.get("pm2_5") is not None:
+            us_aqi = calculate_pm25_to_us_aqi(current.get("pm2_5"))
         aqi_info = get_aqi_category(us_aqi)
 
         pollutants = {
@@ -447,6 +488,8 @@ async def get_trends(lat: float, lon: float):
             p25_val = clean_trend_numeric(pm25[i] if i < len(pm25) else None, 1)
             p10_val = clean_trend_numeric(pm10[i] if i < len(pm10) else None, 1)
             aqi_val = clean_trend_numeric(us_aqi[i] if i < len(us_aqi) else None, 0)
+            if aqi_val is None and p25_val is not None:
+                aqi_val = clean_trend_numeric(calculate_pm25_to_us_aqi(p25_val), 0)
             eaqi_val = clean_trend_numeric(european_aqi[i] if i < len(european_aqi) else None, 0)
             o3_val = clean_trend_numeric(ozone[i] if i < len(ozone) else None, 1)
             no2_val = clean_trend_numeric(no2[i] if i < len(no2) else None, 1)
