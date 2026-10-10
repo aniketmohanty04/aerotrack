@@ -353,5 +353,3 @@ npm run dev
 **Aniket Mohanty**  
 Registration No: `25BCE5816`  
 *Tech Round 1 Recruitment Challenge, 2026*
-   
- 
