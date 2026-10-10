@@ -201,6 +201,11 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading,
               >
                 {aqi_info.category}
               </span>
+              {(data.is_capped || data.us_aqi_capped) && (
+                <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                  EPA Scale Max (Capped at 500)
+                </span>
+              )}
             </div>
             <p className="text-sm text-slate-300 max-w-xl">
               {aqi_info.description}

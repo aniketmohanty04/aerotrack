@@ -20,6 +20,8 @@ export interface AirQualityData {
   timezone: string;
   us_aqi: number | null;
   european_aqi: number | null;
+  us_aqi_capped?: boolean;
+  is_capped?: boolean;
   aqi_info: AQIInfo;
   pollutants: {
     pm2_5: PollutantDetail;
