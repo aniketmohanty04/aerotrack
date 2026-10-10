@@ -186,6 +186,11 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading,
               <span className="text-xs font-semibold tracking-wider uppercase text-slate-400">
                 Air Quality Index (AQI)
               </span>
+              {data.time && (
+                <span className="text-[10px] font-medium text-slate-500 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800 ml-2">
+                  Data from: {new Date(data.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
+                </span>
+              )}
             </div>
             <div className="flex items-baseline gap-3">
               <span className="text-5xl font-extrabold tracking-tight text-white">
