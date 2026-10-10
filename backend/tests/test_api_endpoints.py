@@ -353,3 +353,55 @@ def test_air_quality_computes_aqi_from_pm25_when_upstream_us_aqi_null(monkeypatc
     assert data["aqi_info"]["level"] == "unhealthy_sensitive"
 
 
+def test_air_quality_caps_at_500(monkeypatch):
+    """Verify that extreme pollution levels (>500) are clamped at 500 with is_capped flag set."""
+    from backend import main
+
+    main.SHARED_AIR_CACHE.clear()
+
+    mock_extreme_data = {
+        "current": {
+            "time": "2026-10-10T12:00",
+            "us_aqi": 850,  # Open-Meteo extreme extrapolation
+            "european_aqi": 620,
+            "pm2_5": 780.0,
+            "pm10": 1100.0,
+            "carbon_monoxide": 5000.0,
+            "nitrogen_dioxide": 200.0,
+            "sulphur_dioxide": 150.0,
+            "ozone": 80.0
+        },
+        "current_units": {},
+        "timezone": "Asia/Kolkata"
+    }
+
+    async def mock_fetch_raw(lat, lon):
+        return mock_extreme_data
+
+    monkeypatch.setattr(main, "_fetch_open_meteo_raw", mock_fetch_raw)
+
+    res = client.get("/api/air-quality/28.6139/77.2090")
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["us_aqi"] == 500
+    assert data["european_aqi"] == 500
+    assert data["is_capped"] is True
+    assert data["us_aqi_capped"] is True
+    assert data["aqi_info"]["category"] == "Hazardous"
+
+
+def test_admin_clear_cache_endpoint():
+    """Verify GET /api/admin/clear-cache clears cache and returns status."""
+    from backend import main
+
+    main.SHARED_AIR_CACHE[(28.6139, 77.2090)] = {"timestamp": 123.0, "data": {}}
+    assert len(main.SHARED_AIR_CACHE) > 0
+
+    res = client.get("/api/admin/clear-cache")
+    assert res.status_code == 200
+    assert res.json() == {"status": "cleared", "shared_cache_size": 0}
+    assert len(main.SHARED_AIR_CACHE) == 0
+
+
+

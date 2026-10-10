@@ -280,6 +280,7 @@ async def search_location(query: str = Query(..., min_length=2)):
 # Key: (round(lat, 4), round(lon, 4)), Value: { 'timestamp': float, 'data': dict }
 SHARED_AIR_CACHE: Dict[tuple, Dict[str, Any]] = {}
 CACHE_TTL_AIR_SECONDS = 600  # 10 minutes
+MAX_CACHE_SIZE = 500
 IN_FLIGHT_AIR_REQUESTS: Dict[tuple, asyncio.Task] = {}
 
 
@@ -311,16 +312,20 @@ async def get_shared_open_meteo_data(lat: float, lon: float) -> Dict[str, Any]:
 
     if cache_key in SHARED_AIR_CACHE:
         cached = SHARED_AIR_CACHE[cache_key]
-        if now - cached["timestamp"] < CACHE_TTL_AIR_SECONDS:
-            logger.info(f"Shared Open-Meteo cache HIT for ({lat}, {lon})")
+        age = now - cached["timestamp"]
+        if age < CACHE_TTL_AIR_SECONDS:
+            logger.info(f"Cache HIT for {cache_key}, age={age:.1f}s")
             return cached["data"]
+        else:
+            logger.info(f"Cache EXPIRED for {cache_key}, age={age:.1f}s - refetching")
+            del SHARED_AIR_CACHE[cache_key]
 
     # Await existing in-flight task if air-quality and trends fired concurrently
     if cache_key in IN_FLIGHT_AIR_REQUESTS:
         logger.info(f"Awaiting in-flight Open-Meteo request for ({lat}, {lon})")
         return await IN_FLIGHT_AIR_REQUESTS[cache_key]
 
-    logger.info(f"Shared Open-Meteo cache MISS for ({lat}, {lon}) - fetching from Open-Meteo")
+    logger.info(f"Cache MISS for {cache_key} - fetching from Open-Meteo")
     task = asyncio.create_task(_fetch_open_meteo_raw(lat, lon))
     IN_FLIGHT_AIR_REQUESTS[cache_key] = task
     try:
@@ -329,9 +334,28 @@ async def get_shared_open_meteo_data(lat: float, lon: float) -> Dict[str, Any]:
             "timestamp": time.time(),
             "data": data
         }
+        if len(SHARED_AIR_CACHE) > MAX_CACHE_SIZE:
+            oldest_key = min(SHARED_AIR_CACHE, key=lambda k: SHARED_AIR_CACHE[k]["timestamp"])
+            del SHARED_AIR_CACHE[oldest_key]
         return data
     finally:
         IN_FLIGHT_AIR_REQUESTS.pop(cache_key, None)
+
+
+@app.get("/api/admin/clear-cache")
+async def clear_cache():
+    SHARED_AIR_CACHE.clear()
+    # Also clear the model cache from ml_model
+    try:
+        from backend.ml_model import MODEL_CACHE
+        MODEL_CACHE.clear()
+    except ImportError:
+        try:
+            from ml_model import MODEL_CACHE
+            MODEL_CACHE.clear()
+        except ImportError:
+            pass
+    return {"status": "cleared", "shared_cache_size": 0}
 
 
 @app.get("/api/air-quality/{lat}/{lon}")
@@ -347,9 +371,18 @@ async def get_air_quality(lat: float, lon: float):
         current = data.get("current", {})
         units = data.get("current_units", {})
 
-        us_aqi = current.get("us_aqi")
-        if us_aqi is None and current.get("pm2_5") is not None:
-            us_aqi = calculate_pm25_to_us_aqi(current.get("pm2_5"))
+        original_us_aqi = current.get("us_aqi")
+        if original_us_aqi is None and current.get("pm2_5") is not None:
+            original_us_aqi = calculate_pm25_to_us_aqi(current.get("pm2_5"))
+
+        us_aqi = original_us_aqi
+        if us_aqi is not None and us_aqi > 500:
+            us_aqi = 500
+
+        european_aqi = current.get("european_aqi")
+        if european_aqi is not None and european_aqi > 500:
+            european_aqi = 500
+
         aqi_info = get_aqi_category(us_aqi)
 
         pollutants = {
@@ -397,13 +430,17 @@ async def get_air_quality(lat: float, lon: float):
             }
         }
 
+        is_capped = bool(original_us_aqi is not None and original_us_aqi > 500)
+
         return {
             "latitude": lat,
             "longitude": lon,
             "time": current.get("time"),
             "timezone": data.get("timezone", "UTC"),
             "us_aqi": us_aqi,
-            "european_aqi": current.get("european_aqi"),
+            "european_aqi": european_aqi,
+            "us_aqi_capped": is_capped,
+            "is_capped": is_capped,
             "aqi_info": aqi_info,
             "pollutants": pollutants
         }
