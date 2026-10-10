@@ -280,7 +280,7 @@ async def search_location(query: str = Query(..., min_length=2)):
 # Key: (round(lat, 4), round(lon, 4)), Value: { 'timestamp': float, 'data': dict }
 SHARED_AIR_CACHE: Dict[tuple, Dict[str, Any]] = {}
 CACHE_TTL_AIR_SECONDS = 600  # 10 minutes
-WAQI_TOKEN = os.getenv("WAQI_TOKEN", "6ce5b38420030ebaabef8ef19478badd7861b2d6")
+WAQI_TOKEN = os.getenv("WAQI_TOKEN", "b226d82981367a88a2e4747cea6c8c1b09fac5a1")
 MAX_CACHE_SIZE = 500
 IN_FLIGHT_AIR_REQUESTS: Dict[tuple, asyncio.Task] = {}
 
