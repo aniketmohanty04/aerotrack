@@ -1,6 +1,6 @@
 import React from 'react';
 import { AirQualityData, PollutantDetail } from '../types';
-import { Wind, ShieldAlert, Activity, Flame, Droplets, Sun, Gauge, Info, AlertCircle, RefreshCw } from 'lucide-react';
+import { Wind, ShieldAlert, Activity, Flame, Droplets, Sun, Gauge, Info, AlertCircle, RefreshCw, MapPin } from 'lucide-react';
 
 interface PollutantCardsProps {
   data?: AirQualityData | null;
@@ -192,6 +192,12 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading,
                 </span>
               )}
             </div>
+            {data.station_name && (
+              <div className="text-[11px] font-medium text-slate-400 flex items-center gap-1">
+                <MapPin className="w-3 h-3 text-cyan-500" />
+                Station: <span className="text-slate-300 truncate max-w-[200px] sm:max-w-xs">{data.station_name}</span>
+              </div>
+            )}
             <div className="flex items-baseline gap-3">
               <span className="text-5xl font-extrabold tracking-tight text-white">
                 {us_aqi ?? 'N/A'}
@@ -273,7 +279,7 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading,
 
               {/* Sub-label: Atmospheric Concentration on its own row across full card width */}
               <div className="text-[11px] text-slate-400 font-medium mt-2 whitespace-nowrap">
-                Atmospheric Concentration
+                {item.unit === 'AQI' ? 'Pollutant Sub-Index' : 'Atmospheric Concentration'}
               </div>
 
               {/* Value and Unit row */}

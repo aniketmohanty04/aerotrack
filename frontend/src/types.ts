@@ -22,6 +22,7 @@ export interface AirQualityData {
   european_aqi: number | null;
   us_aqi_capped?: boolean;
   is_capped?: boolean;
+  station_name?: string;
   aqi_info: AQIInfo;
   pollutants: {
     pm2_5: PollutantDetail;
