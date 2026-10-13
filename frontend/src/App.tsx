@@ -6,6 +6,11 @@ import {
   ForecastData,
   LocationPreset,
 } from './types';
+import {
+  fetchDirectAirQuality,
+  fetchDirectTrends,
+  fetchDirectForecast,
+} from './services/openMeteoService';
 import { AirMap } from './components/AirMap';
 import { PollutantCards } from './components/PollutantCards';
 import { TrendChart } from './components/TrendChart';
@@ -85,28 +90,33 @@ export const App: React.FC = () => {
     setError(null);
     setForecastError(null);
 
-    // 1. Live Air Quality telemetry (fastest: ~150-250ms)
+    // 1. Live Air Quality telemetry (Render backend with direct Open-Meteo fallback)
     const pAirQuality = axios
       .get<AirQualityData>(`${API_BASE}/api/air-quality/${targetLat}/${targetLon}`, {
         signal,
-        timeout: 15000,
+        timeout: 4000,
       })
       .then((res) => {
         if (reqIdRef.current !== currentReqId) return;
         setAirQuality(res.data);
         setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (axios.isCancel(err) || reqIdRef.current !== currentReqId) return;
-        setAirQuality(null);
-        if (err.response?.status === 400) {
-          setError("Invalid location. Please click somewhere within the valid map range.");
-        } else if (err.code === 'ECONNABORTED') {
-          setError("Air quality telemetry request timed out. Please try again.");
-        } else if (err.response?.status && err.response.status >= 500) {
-          setError("Server error. Please try again in a moment.");
-        } else {
-          setError("Failed to fetch air quality data. Check your connection.");
+        try {
+          const directData = await fetchDirectAirQuality(targetLat, targetLon);
+          if (reqIdRef.current !== currentReqId) return;
+          setAirQuality(directData);
+          setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+          setError(null);
+        } catch {
+          if (reqIdRef.current !== currentReqId) return;
+          setAirQuality(null);
+          if (err.response?.status === 400) {
+            setError("Invalid location. Please click somewhere within the valid map range.");
+          } else {
+            setError("Failed to fetch air quality data. Check your connection.");
+          }
         }
       })
       .finally(() => {
@@ -115,19 +125,26 @@ export const App: React.FC = () => {
         }
       });
 
-    // 2. 7-Day Historical Trends (~200-350ms)
+    // 2. 7-Day Historical Trends (Render backend with direct Open-Meteo fallback)
     const pTrends = axios
       .get<TrendData>(`${API_BASE}/api/trends/${targetLat}/${targetLon}`, {
         signal,
-        timeout: 15000,
+        timeout: 4000,
       })
       .then((res) => {
         if (reqIdRef.current !== currentReqId) return;
         setTrends(res.data);
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (axios.isCancel(err) || reqIdRef.current !== currentReqId) return;
-        setTrends(null);
+        try {
+          const directTrends = await fetchDirectTrends(targetLat, targetLon);
+          if (reqIdRef.current !== currentReqId) return;
+          setTrends(directTrends);
+        } catch {
+          if (reqIdRef.current !== currentReqId) return;
+          setTrends(null);
+        }
       })
       .finally(() => {
         if (reqIdRef.current === currentReqId) {
@@ -135,35 +152,34 @@ export const App: React.FC = () => {
         }
       });
 
-    // 3. 24-Hour ML PM2.5 Forecast with Split Conformal Intervals (~1-3s)
+    // 3. 24-Hour ML PM2.5 Forecast (Render backend with direct real Open-Meteo fallback)
     const pForecast = axios
       .get<ForecastData>(`${API_BASE}/api/predict/${targetLat}/${targetLon}`, {
         signal,
-        timeout: 40000,
+        timeout: 6000,
       })
       .then((res) => {
         if (reqIdRef.current !== currentReqId) return;
         const fData = res.data;
         if (fData.status === 'error') {
-          setForecast(null);
-          setForecastError((fData as any).message || 'Forecast unavailable.');
+          throw new Error((fData as any).message || 'Forecast unavailable.');
         } else {
           setForecast(fData);
           setForecastError(null);
         }
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (axios.isCancel(err) || reqIdRef.current !== currentReqId) return;
-        const errResp = err.response?.data;
-        const errMsg =
-          errResp?.message ||
-          errResp?.detail?.message ||
-          (typeof errResp?.detail === 'string' ? errResp.detail : null) ||
-          (err.code === 'ECONNABORTED'
-            ? 'Forecasting service timed out. Please retry.'
-            : 'Historical air quality observations are unavailable or insufficient for this location.');
-        setForecast(null);
-        setForecastError(errMsg);
+        try {
+          const directForecast = await fetchDirectForecast(targetLat, targetLon);
+          if (reqIdRef.current !== currentReqId) return;
+          setForecast(directForecast);
+          setForecastError(null);
+        } catch {
+          if (reqIdRef.current !== currentReqId) return;
+          setForecast(null);
+          setForecastError('Atmospheric forecast is currently unavailable for this location.');
+        }
       })
       .finally(() => {
         if (reqIdRef.current === currentReqId) {
@@ -193,31 +209,6 @@ export const App: React.FC = () => {
   };
 
   const handleSelectLocation = handleSelect;
-
-  // Opt-in explicit demo forecast loader for demonstrations or when upstream data is unavailable
-  const handleEnableDemoForecast = async () => {
-    setIsForecastLoading(true);
-    setForecastError(null);
-    try {
-      const res = await axios.get<ForecastData>(`${API_BASE}/api/predict/${lat}/${lon}?allow_demo=true`);
-      if (res.data.status === 'error') {
-        setForecast(null);
-        setForecastError((res.data as any).message || 'Failed to load demo forecast.');
-      } else {
-        setForecast(res.data);
-      }
-    } catch (err: any) {
-      const errResp = err.response?.data;
-      const errMsg =
-        errResp?.message ||
-        errResp?.detail?.message ||
-        (typeof errResp?.detail === 'string' ? errResp.detail : null) ||
-        'Failed to load demo forecast.';
-      setForecastError(errMsg);
-    } finally {
-      setIsForecastLoading(false);
-    }
-  };
 
   // Trigger initial fetch on component mount
   useEffect(() => {
@@ -397,7 +388,6 @@ export const App: React.FC = () => {
               data={forecast}
               isLoading={isForecastLoading}
               error={forecastError}
-              onEnableDemo={handleEnableDemoForecast}
             />
           </div>
         </section>

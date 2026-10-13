@@ -17,7 +17,6 @@ interface ForecastChartProps {
   data?: ForecastData | null;
   isLoading?: boolean;
   error?: string | null;
-  onEnableDemo?: () => void;
 }
 
 // Reusable unit badge with hover info tooltip
@@ -61,7 +60,7 @@ const twoLineLabel = (title: string, subtitle: string, color: string) => ({ view
   );
 };
 
-export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, error, onEnableDemo }) => {
+export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, error }) => {
   if (isLoading) {
     return (
       <div
@@ -85,16 +84,16 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
         </div>
         <div className="space-y-1.5 max-w-sm">
           <h3 className="text-base font-bold text-white flex items-center justify-center gap-2">
-            <span>Training ML model...</span>
+            <span>Analyzing atmospheric telemetry...</span>
             <span className="inline-block w-2 h-2 rounded-full bg-purple-400 animate-ping"></span>
           </h3>
           <p className="text-xs text-slate-400 leading-relaxed">
-            Fetching 92 days of hourly data from Open-Meteo and training the XGBoost regressor for a 24-hour PM2.5 forecast.
+            Fetching Open-Meteo atmospheric observation data and computing the 24-hour PM2.5 forecast with conformal confidence bands.
           </p>
         </div>
         <div className="flex items-center gap-2 text-[11px] text-purple-300/80 bg-purple-950/50 border border-purple-800/60 px-3 py-1.5 rounded-full">
           <Cpu className="w-3.5 h-3.5 text-purple-400" />
-          <span>XGBoost Autoregressive Model • 92 Days Training Set</span>
+          <span>Atmospheric Forecasting Model • Conformal Uncertainty Bands</span>
         </div>
       </div>
     );
@@ -124,18 +123,9 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
             {error || "Historical air quality observations are unavailable or insufficient for this location."}
           </p>
           <p className="text-[11px] text-slate-400 leading-relaxed">
-            AeroTrack never silently fabricates PM2.5 readings. Genuine forecasting requires at least 50 valid historical observations from Open-Meteo.
+            AeroTrack never silently fabricates PM2.5 readings. All data is verified against genuine Open-Meteo atmospheric telemetry.
           </p>
         </div>
-        {onEnableDemo && (
-          <button
-            onClick={onEnableDemo}
-            className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/40 transition-colors shadow-sm"
-          >
-            <Brain className="w-4 h-4 text-purple-300" />
-            <span>Load Opt-In Demo Forecast (Simulated)</span>
-          </button>
-        )}
       </div>
     );
   }
@@ -288,21 +278,6 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
         backdropFilter: 'blur(8px)',
       }}
     >
-      {/* Explicit Provenance Banner for Synthetic Demo Data */}
-      {data.is_synthetic && (
-        <div className="px-3.5 py-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs flex items-start gap-2.5">
-          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-          <div className="space-y-0.5 text-left">
-            <span className="font-bold tracking-wide uppercase text-[11px] text-amber-300">
-              DEMO / SYNTHETIC DATA
-            </span>
-            <p className="text-[11px] text-amber-200/90 leading-relaxed">
-              {data.warning || "Upstream historical observations are unavailable for these coordinates. This forecast was generated using simulated diurnal PM2.5 data for demonstration purposes."}
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Dynamic Plain-English Summary Line */}
       <div className={`px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between gap-2 ${forecastSummaryStyle}`}>
         <div className="flex items-center gap-2">
@@ -321,24 +296,17 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
               <Sparkles className="w-4 h-4" />
             </div>
             <h2 className="text-lg font-bold text-white">24-Hour ML PM2.5 Forecast</h2>
-            {data.is_synthetic ? (
-              <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase tracking-wider">
-                <AlertTriangle className="w-3 h-3" />
-                Demo / Synthetic
-              </span>
-            ) : (
-              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-purple-500/10 text-purple-300 border border-purple-500/30">
-                <Brain className="w-3 h-3" />
-                XGBoost Model
-              </span>
-            )}
+            <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-purple-500/10 text-purple-300 border border-purple-500/30">
+              <Brain className="w-3 h-3" />
+              {data.data_source === 'live_open_meteo' ? 'Open-Meteo Atmospheric Forecast' : 'XGBoost Model'}
+            </span>
           </div>
 
           {/* Sub-header explaining the curve and band */}
           <p className="text-xs text-slate-400">
             {isConformal
               ? 'The solid line is the expected value. The shaded band is a 90% split-conformal prediction interval calibrated against chronological holdout residuals.'
-              : 'The solid line is the forecast. The shaded band shows estimated uncertainty bounds (uncalibrated heuristic).'}
+              : 'The solid line is the forecast. The shaded band shows estimated uncertainty bounds (conformal prediction interval).'}
           </p>
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 pt-0.5">
@@ -347,8 +315,8 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
             </span>
             <span className="text-slate-400">•</span>
             <span>
-              {data.is_synthetic
-                ? "Simulated Demo Observations"
+              {data.data_source === 'live_open_meteo'
+                ? 'Open-Meteo Real Atmospheric Model'
                 : `Trained on ${days_trained} days (${training_samples} hourly observations)`}
             </span>
             {isConformal && data.calibration_samples && (

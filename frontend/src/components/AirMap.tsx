@@ -61,15 +61,29 @@ const MapClickHandler: React.FC<{
       // 2. Fetch reverse-geocoded place name asynchronously in the background with timeout
       try {
         const res = await axios.get(`${API_BASE}/api/reverse-geocode/${lat}/${lon}`, {
-          timeout: 6000,
+          timeout: 4000,
         });
         if (clickCounterRef.current !== currentClickId) return;
         const { city, region, country } = res.data || {};
         const parts = [city, region, country].filter(Boolean);
         if (parts.length > 0 && onNameRef.current) {
           onNameRef.current(parts.join(", "));
+          return;
         }
-      } catch (err) {
+      } catch {
+        /* fallback to BigDataCloud direct in browser */
+      }
+
+      try {
+        const bdcUrl = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`;
+        const bdcRes = await axios.get(bdcUrl, { timeout: 4000 });
+        if (clickCounterRef.current !== currentClickId) return;
+        const bdcData = bdcRes.data || {};
+        const parts = [bdcData.city || bdcData.locality, bdcData.principalSubdivision, bdcData.countryName].filter(Boolean);
+        if (parts.length > 0 && onNameRef.current) {
+          onNameRef.current(parts.join(", "));
+        }
+      } catch {
         /* keep existing coordinate fallback */
       }
     },

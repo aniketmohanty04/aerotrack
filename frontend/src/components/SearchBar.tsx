@@ -52,14 +52,27 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
         setResults(searchResults);
         setIsOpen(true);
       } catch (err: any) {
-        console.error('Nominatim place search failed:', err);
-        setResults([]);
-        setIsOpen(true);
-        if (err.response?.status === 429) {
-          setSearchError('Search rate limit reached. Please wait a moment.');
-        } else if (err.response?.status >= 500) {
-          setSearchError('Place search temporarily unavailable.');
-        } else {
+        // Fall back to direct Open-Meteo geocoding API if backend is unavailable
+        try {
+          const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(trimmed)}&count=5&language=en&format=json`;
+          const geoRes = await axios.get(geoUrl, { timeout: 4000 });
+          const geoData = geoRes.data?.results || [];
+          const mapped: SearchResult[] = geoData.map((item: any) => {
+            const parts = [item.name, item.admin1, item.country].filter(Boolean);
+            return {
+              name: item.name,
+              full_name: parts.join(', '),
+              latitude: item.latitude,
+              longitude: item.longitude,
+              type: item.feature_code || 'city',
+            };
+          });
+          setResults(mapped);
+          setIsOpen(true);
+          setSearchError(null);
+        } catch {
+          setResults([]);
+          setIsOpen(true);
           setSearchError('Unable to search places. Please check your connection.');
         }
       } finally {
