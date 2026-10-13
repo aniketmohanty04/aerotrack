@@ -107,9 +107,13 @@ def chronological_split(
     train_end = int(n * train_ratio)
     val_end = int(n * (train_ratio + val_ratio))
 
-    train_df = df.iloc[:train_end].copy().reset_index(drop=True)
-    val_df = df.iloc[train_end:val_end].copy().reset_index(drop=True)
-    test_df = df.iloc[val_end:].copy().reset_index(drop=True)
+    # Preserve the sorted dataframe's global positional index. Downstream code uses
+    # these indices to address rows in the full `df`/`df_feat` timeline for
+    # validation calibration and test evaluation. Resetting each partition here
+    # would incorrectly make validation/test start at index 0.
+    train_df = df.iloc[:train_end].copy()
+    val_df = df.iloc[train_end:val_end].copy()
+    test_df = df.iloc[val_end:].copy()
 
     # Sanity verification of chronological boundaries
     if not train_df.empty and not val_df.empty:
@@ -237,7 +241,9 @@ def evaluate_location_dataset(
 
     eval_origins: List[int] = []
     # Origin T must leave at least `horizon` hours in test_df for ground-truth comparison
-    for offset in range(0, total_test_hours - horizon, eval_stride_hours):
+    # Include the final valid origin when it falls on the evaluation stride.
+    # Each origin must have `horizon` future observations available in the test set.
+    for offset in range(0, total_test_hours - horizon + 1, eval_stride_hours):
         eval_origins.append(test_start_idx + offset)
 
     logger.info(f"Test partition size: {total_test_hours} hours. Running {len(eval_origins)} 24-hour evaluation windows.")
