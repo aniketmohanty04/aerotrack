@@ -169,6 +169,20 @@ export async function fetchDirectAirQuality(lat: number, lon: number): Promise<A
   };
 }
 
+function formatHourDisplay(timeStr: string): string {
+  if (!timeStr) return 'Now';
+  if (timeStr.includes('T')) {
+    const parts = timeStr.split('T')[1]?.split(':');
+    if (parts && parts.length >= 2) {
+      const h = parseInt(parts[0], 10);
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12 = h % 12 || 12;
+      return `${h12}:00 ${ampm}`;
+    }
+  }
+  return timeStr;
+}
+
 /**
  * Fetch 100% REAL 7-day hourly trends directly from Open-Meteo in the browser.
  */
@@ -186,13 +200,18 @@ export async function fetchDirectTrends(lat: number, lon: number): Promise<Trend
   const o3: (number | null)[] = hourly.ozone || [];
   const no2: (number | null)[] = hourly.nitrogen_dioxide || [];
 
-  const nowIso = new Date().toISOString();
+  const utcOffsetSeconds = typeof data.utc_offset_seconds === 'number' ? data.utc_offset_seconds : 0;
+  // Compute current local time in location's timezone matching Open-Meteo hourly format "YYYY-MM-DDTHH:mm"
+  const localEpochMs = Date.now() + utcOffsetSeconds * 1000;
+  const localDate = new Date(localEpochMs);
+  const localIso = `${localDate.getUTCFullYear()}-${String(localDate.getUTCMonth() + 1).padStart(2, '0')}-${String(localDate.getUTCDate()).padStart(2, '0')}T${String(localDate.getUTCHours()).padStart(2, '0')}:${String(localDate.getUTCMinutes()).padStart(2, '0')}`;
+
   const trendPoints: TrendPoint[] = [];
   const validPm25: number[] = [];
 
   for (let i = 0; i < times.length; i++) {
     const tStr = times[i];
-    const isForecast = tStr > nowIso;
+    const isForecast = tStr > localIso;
     const p25Val = pm25[i] ?? null;
     if (p25Val !== null && !isForecast) validPm25.push(p25Val);
 
@@ -249,11 +268,16 @@ export async function fetchDirectForecast(lat: number, lon: number): Promise<For
   const times: string[] = data.hourly?.time || [];
   const pm25Vals: (number | null)[] = data.hourly?.pm2_5 || [];
 
-  const nowIso = new Date().toISOString();
-  // Find current time index
+  const utcOffsetSeconds = typeof data.utc_offset_seconds === 'number' ? data.utc_offset_seconds : 0;
+  // Compute current local time in location's timezone matching Open-Meteo hourly format
+  const localEpochMs = Date.now() + utcOffsetSeconds * 1000;
+  const localDate = new Date(localEpochMs);
+  const localIso = `${localDate.getUTCFullYear()}-${String(localDate.getUTCMonth() + 1).padStart(2, '0')}-${String(localDate.getUTCDate()).padStart(2, '0')}T${String(localDate.getUTCHours()).padStart(2, '0')}:${String(localDate.getUTCMinutes()).padStart(2, '0')}`;
+
+  // Find current time index in location's timezone
   let currentIndex = 0;
   for (let i = 0; i < times.length; i++) {
-    if (times[i] <= nowIso) currentIndex = i;
+    if (times[i] <= localIso) currentIndex = i;
   }
 
   const currentPm25 = pm25Vals[currentIndex] ?? 25.0;
@@ -269,11 +293,10 @@ export async function fetchDirectForecast(lat: number, lon: number): Promise<For
       // Horizon uncertainty expansion: ± (15% + 0.5% per hour)
       const halfWidth = Math.max(4.0, predVal * (0.15 + 0.005 * step));
       const tStr = times[idx] || '';
-      let displayTime = tStr;
+      const displayTime = formatHourDisplay(tStr);
       let displayDate = 'Tomorrow';
-      if (tStr.length >= 16) {
+      if (tStr.length >= 10) {
         displayDate = tStr.substring(5, 10);
-        displayTime = tStr.substring(11, 16);
       }
 
       forecastPoints.push({
@@ -293,14 +316,16 @@ export async function fetchDirectForecast(lat: number, lon: number): Promise<For
   const minF = forecastVals.length ? Math.min(...forecastVals) : currentPm25;
   const maxF = forecastVals.length ? Math.max(...forecastVals) : currentPm25;
 
+  const currentDisplayTime = formatHourDisplay(times[currentIndex] || localIso);
+
   return {
     status: 'success',
     latitude: lat,
     longitude: lon,
     training_samples: 48,
     days_trained: 2,
-    current_time: times[currentIndex] || nowIso,
-    current_display_time: times[currentIndex] || nowIso,
+    current_time: times[currentIndex] || localIso,
+    current_display_time: currentDisplayTime,
     current_pm25: currentPm25,
     forecast_average: avgF,
     forecast_min: minF,

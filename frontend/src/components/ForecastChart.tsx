@@ -206,11 +206,25 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
   let forecastSummaryStyle = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300';
   let ForecastSummaryIcon = CheckCircle2;
 
+  const safeDisplayTime = (val?: string) => {
+    if (!val || val === 'Now') return 'Now';
+    if (val.includes('T')) {
+      const parts = val.split('T')[1]?.split(':');
+      if (parts && parts.length >= 2) {
+        const h = parseInt(parts[0], 10);
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        const h12 = h % 12 || 12;
+        return `${h12}:00 ${ampm}`;
+      }
+    }
+    return val;
+  };
+
   // Prepare chart data starting with "Now" (step 0, measured current PM2.5) followed by predictions
   const nowPoint = {
     step: 0,
     time: data.current_time || new Date().toISOString(),
-    display_time: data.current_display_time || 'Now',
+    display_time: safeDisplayTime(data.current_display_time) || 'Now',
     display_date: 'Today',
     predicted_pm25: current_pm25,
     lower_bound: current_pm25,
@@ -223,6 +237,7 @@ export const ForecastChart: React.FC<ForecastChartProps> = ({ data, isLoading, e
     nowPoint,
     ...forecast.map((pt) => ({
       ...pt,
+      display_time: safeDisplayTime(pt.display_time),
       confidence_range: [pt.lower_bound, pt.upper_bound],
       is_now: false,
     }))
