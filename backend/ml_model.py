@@ -136,12 +136,9 @@ async def fetch_historical_air_quality(
     }
 
     data = None
-    headers = {
-        "User-Agent": "AeroTrack-Environmental-Platform/1.0 (https://aerotrack-three.vercel.app; educational-demo)"
-    }
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get(url, params=params, headers=headers)
+            response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
     except httpx.HTTPStatusError as exc:
@@ -150,8 +147,7 @@ async def fetch_historical_air_quality(
             f"Open-Meteo returned HTTP {status} for coordinates ({lat}, {lon})",
             extra={"latitude": lat, "longitude": lon, "status_code": status, "allow_demo": allow_demo}
         )
-        if allow_demo or status == 429:
-            logger.warning(f"Open-Meteo returned HTTP {status}. Using fallback simulation for ({lat}, {lon}) to ensure 100% demo uptime.")
+        if allow_demo:
             demo_df, offset = _generate_synthetic_demo_data(lat, lon)
             return demo_df, offset, True
         raise UpstreamProviderError(

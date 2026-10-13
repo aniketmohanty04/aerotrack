@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
-import math
 import re
 import time
 from typing import Dict, Any, List, Optional
@@ -285,87 +284,6 @@ MAX_CACHE_SIZE = 500
 IN_FLIGHT_AIR_REQUESTS: Dict[tuple, asyncio.Task] = {}
 
 
-def _generate_fallback_open_meteo_data(lat: float, lon: float) -> Dict[str, Any]:
-    now_dt = datetime.now(timezone.utc)
-    hour = now_dt.hour
-    diurnal = 38.0 + 12.0 * math.sin(2 * math.pi * (hour - 7) / 24.0)
-    if 10.0 <= lat <= 35.0 and 65.0 <= lon <= 95.0:
-        base_pm25 = max(35.0, diurnal * 1.8)
-    else:
-        base_pm25 = max(8.0, diurnal * 0.7)
-
-    base_pm25 = round(base_pm25, 1)
-    base_pm10 = round(base_pm25 * 1.9, 1)
-    base_no2 = round(18.0 + 8.0 * math.sin(2 * math.pi * (hour - 8) / 24.0), 1)
-    base_so2 = round(7.0 + 3.0 * math.cos(2 * math.pi * hour / 24.0), 1)
-    base_o3 = round(32.0 + 14.0 * math.sin(2 * math.pi * (hour - 14) / 24.0), 1)
-    base_co = round(450.0 + 100.0 * math.sin(2 * math.pi * (hour - 8) / 24.0), 1)
-
-    us_aqi = calculate_pm25_to_us_aqi(base_pm25)
-    eu_aqi = min(100, int(base_pm25 * 1.5))
-
-    past_start = now_dt - timedelta(days=7)
-    times = []
-    pm25_arr = []
-    pm10_arr = []
-    us_aqi_arr = []
-    eu_aqi_arr = []
-    o3_arr = []
-    no2_arr = []
-
-    for h in range(8 * 24):
-        t_pt = past_start + timedelta(hours=h)
-        times.append(t_pt.strftime("%Y-%m-%dT%H:00"))
-        h_hour = t_pt.hour
-        h_pm25 = round(max(5.0, base_pm25 + 10.0 * math.sin(2 * math.pi * (h_hour - 7) / 24.0)), 1)
-        pm25_arr.append(h_pm25)
-        pm10_arr.append(round(h_pm25 * 1.9, 1))
-        us_aqi_arr.append(calculate_pm25_to_us_aqi(h_pm25))
-        eu_aqi_arr.append(min(100, int(h_pm25 * 1.5)))
-        o3_arr.append(round(max(5.0, 30.0 + 15.0 * math.sin(2 * math.pi * (h_hour - 14) / 24.0)), 1))
-        no2_arr.append(round(max(5.0, 16.0 + 8.0 * math.sin(2 * math.pi * (h_hour - 8) / 24.0)), 1))
-
-    current_time_str = now_dt.strftime("%Y-%m-%dT%H:00")
-
-    return {
-        "latitude": lat,
-        "longitude": lon,
-        "timezone": "UTC",
-        "utc_offset_seconds": 0,
-        "current": {
-            "time": current_time_str,
-            "us_aqi": us_aqi,
-            "european_aqi": eu_aqi,
-            "pm2_5": base_pm25,
-            "pm10": base_pm10,
-            "nitrogen_dioxide": base_no2,
-            "sulphur_dioxide": base_so2,
-            "ozone": base_o3,
-            "carbon_monoxide": base_co
-        },
-        "current_units": {
-            "time": "iso8601",
-            "us_aqi": "",
-            "european_aqi": "",
-            "pm2_5": "µg/m³",
-            "pm10": "µg/m³",
-            "nitrogen_dioxide": "µg/m³",
-            "sulphur_dioxide": "µg/m³",
-            "ozone": "µg/m³",
-            "carbon_monoxide": "µg/m³"
-        },
-        "hourly": {
-            "time": times,
-            "pm2_5": pm25_arr,
-            "pm10": pm10_arr,
-            "us_aqi": us_aqi_arr,
-            "european_aqi": eu_aqi_arr,
-            "ozone": o3_arr,
-            "nitrogen_dioxide": no2_arr
-        }
-    }
-
-
 async def _fetch_open_meteo_raw(lat: float, lon: float) -> Dict[str, Any]:
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {
@@ -377,17 +295,10 @@ async def _fetch_open_meteo_raw(lat: float, lon: float) -> Dict[str, Any]:
         "forecast_days": 1,
         "timezone": "auto"
     }
-    headers = {
-        "User-Agent": "AeroTrack-Environmental-Platform/1.0 (https://aerotrack-three.vercel.app; educational-demo)"
-    }
-    try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPError as err:
-        logger.warning(f"Open-Meteo query failed ({err}). Using atmospheric fallback to ensure 100% uptime.")
-        return _generate_fallback_open_meteo_data(lat, lon)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
 
 
 async def get_shared_open_meteo_data(lat: float, lon: float) -> Dict[str, Any]:
