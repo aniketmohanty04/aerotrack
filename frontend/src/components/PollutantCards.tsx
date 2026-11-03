@@ -84,14 +84,14 @@ const PollutantSkeleton: React.FC = () => {
             </div>
             <div className="h-4 w-72 bg-slate-800/80 rounded"></div>
           </div>
-          <div className="flex gap-4 border-t md:border-t-0 md:border-l border-slate-800/80 pt-3 md:pt-0 md:pl-6">
-            <div className="bg-slate-950/80 px-4 py-2.5 rounded-xl border border-slate-800/80 w-24 space-y-2">
+          <div className="flex gap-3 border-t md:border-t-0 md:border-l border-slate-800/80 pt-3 md:pt-0 md:pl-6">
+            <div className="bg-slate-950/80 px-4 py-3 rounded-2xl border border-slate-800/80 w-28 space-y-2">
               <div className="h-2.5 w-12 bg-slate-800 rounded mx-auto"></div>
-              <div className="h-5 w-8 bg-slate-800 rounded mx-auto"></div>
+              <div className="h-6 w-10 bg-slate-800 rounded mx-auto"></div>
             </div>
-            <div className="bg-slate-950/80 px-4 py-2.5 rounded-xl border border-slate-800/80 w-24 space-y-2">
-              <div className="h-2.5 w-14 bg-slate-800 rounded mx-auto"></div>
-              <div className="h-5 w-8 bg-slate-800 rounded mx-auto"></div>
+            <div className="bg-slate-950/80 px-4 py-3 rounded-2xl border border-slate-800/80 w-36 space-y-2">
+              <div className="h-2.5 w-16 bg-slate-800 rounded mx-auto"></div>
+              <div className="h-6 w-14 bg-slate-800 rounded mx-auto"></div>
             </div>
           </div>
         </div>
@@ -160,7 +160,7 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, trends, is
     );
   }
 
-  const { us_aqi, european_aqi, aqi_info, pollutants } = data;
+  const { us_aqi, aqi_info, pollutants } = data;
 
   // Determine highest AQI of the day recorded
   const highestInfo = React.useMemo(() => {
@@ -234,35 +234,59 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, trends, is
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-3 border-t md:border-t-0 md:border-l border-slate-800 pt-3 md:pt-0 md:pl-6">
-            <div className="bg-slate-900/80 px-4 py-2.5 rounded-xl border border-slate-800 text-center">
-              <span className="text-[11px] text-slate-400 block uppercase font-medium">US AQI</span>
-              <span className="text-xl font-bold text-white">{us_aqi ?? '--'}</span>
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 border-t md:border-t-0 md:border-l border-slate-800/80 pt-4 md:pt-0 md:pl-6">
+            {/* Current AQI Card */}
+            <div className="bg-slate-900/90 px-4 py-3 rounded-2xl border border-slate-800/90 text-center min-w-[110px] shadow-sm flex flex-col justify-center">
+              <span className="text-[11px] text-slate-400 block uppercase font-semibold tracking-wider">Current AQI</span>
+              <span className="text-2xl font-extrabold text-white mt-0.5">{us_aqi ?? '--'}</span>
+              <span className="text-[10px] text-slate-500 font-medium block mt-0.5">Live reading</span>
             </div>
-            <div className="bg-slate-900/80 px-4 py-2.5 rounded-xl border border-slate-800 text-center">
-              <span className="text-[11px] text-slate-400 block uppercase font-medium">European AQI</span>
-              <span className="text-xl font-bold text-white">{european_aqi ?? '--'}</span>
-            </div>
-            {highestInfo && (
+
+            {/* Peak AQI Today Card - High Visibility & Clean Format */}
+            {highestInfo ? (
               <div
-                className="bg-slate-900/80 px-4 py-2.5 rounded-xl border text-center transition-colors"
-                style={{ borderColor: `${highestInfo.aqiInfo.color}60` }}
+                className="relative overflow-hidden rounded-2xl border px-4 py-3 text-center transition-all shadow-lg backdrop-blur-md min-w-[145px] flex flex-col justify-center"
+                style={{
+                  borderColor: `${highestInfo.aqiInfo.color}60`,
+                  background: `linear-gradient(135deg, ${highestInfo.aqiInfo.color}20 0%, rgba(15, 23, 42, 0.9) 100%)`,
+                }}
                 title={`Highest AQI recorded today: ${highestInfo.highestAqi} (${highestInfo.aqiInfo.category})`}
               >
-                <span
-                  className="text-[11px] block uppercase font-medium flex items-center justify-center gap-1"
-                  style={{ color: highestInfo.aqiInfo.color }}
-                >
-                  <Flame className="w-3 h-3" /> Peak Today
-                </span>
-                <span className="text-xl font-bold" style={{ color: highestInfo.aqiInfo.color }}>
-                  {highestInfo.highestAqi}
-                </span>
+                <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-400">
+                  <Flame className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Peak Today</span>
+                </div>
+                <div className="flex items-baseline justify-center gap-2 mt-0.5">
+                  <span
+                    className="text-2xl font-black tracking-tight"
+                    style={{ color: highestInfo.aqiInfo.color }}
+                  >
+                    {highestInfo.highestAqi}
+                  </span>
+                  <span
+                    className="text-[10px] font-bold px-1.5 py-0.5 rounded-md"
+                    style={{
+                      backgroundColor: `${highestInfo.aqiInfo.color}25`,
+                      color: highestInfo.aqiInfo.color,
+                      border: `1px solid ${highestInfo.aqiInfo.color}50`,
+                    }}
+                  >
+                    {highestInfo.aqiInfo.category}
+                  </span>
+                </div>
                 {highestInfo.formattedTime && (
-                  <span className="text-[10px] text-slate-400 block mt-0.5">
+                  <span className="text-[10px] text-slate-300 font-medium block mt-0.5">
                     at {highestInfo.formattedTime}
                   </span>
                 )}
+              </div>
+            ) : (
+              <div className="bg-slate-900/90 px-4 py-3 rounded-2xl border border-slate-800 text-center min-w-[120px] flex flex-col justify-center">
+                <span className="text-[11px] text-slate-400 block uppercase font-semibold tracking-wider flex items-center justify-center gap-1">
+                  <Flame className="w-3 h-3 text-slate-500" /> Peak Today
+                </span>
+                <span className="text-2xl font-bold text-slate-400 mt-0.5">--</span>
+                <span className="text-[10px] text-slate-500 block mt-0.5">Recorded peak</span>
               </div>
             )}
           </div>
