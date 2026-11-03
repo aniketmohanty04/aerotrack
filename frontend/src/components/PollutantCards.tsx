@@ -199,12 +199,21 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, trends, is
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
-              <ShieldAlert className="w-5 h-5" style={{ color: aqi_info.color }} />
-              <span className="text-xs font-semibold tracking-wider uppercase text-slate-400">
+              <div
+                className="p-1 rounded-lg border flex items-center justify-center"
+                style={{
+                  backgroundColor: `${aqi_info.color}20`,
+                  borderColor: `${aqi_info.color}40`,
+                  color: aqi_info.color,
+                }}
+              >
+                <ShieldAlert className="w-4 h-4" />
+              </div>
+              <span className="text-xs font-semibold tracking-wider uppercase text-slate-300">
                 Air Quality Index (AQI)
               </span>
               {data.time && (
-                <span className="text-[10px] font-medium text-slate-500 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800 ml-2">
+                <span className="text-[10px] font-medium text-slate-400 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800 ml-2">
                   Data from: {new Date(data.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
                 </span>
               )}
@@ -235,11 +244,43 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, trends, is
           </div>
 
           <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 border-t md:border-t-0 md:border-l border-slate-800/80 pt-4 md:pt-0 md:pl-6">
-            {/* Current AQI Card */}
-            <div className="bg-slate-900/90 px-4 py-3 rounded-2xl border border-slate-800/90 text-center min-w-[110px] shadow-sm flex flex-col justify-center">
-              <span className="text-[11px] text-slate-400 block uppercase font-semibold tracking-wider">Current AQI</span>
-              <span className="text-2xl font-extrabold text-white mt-0.5">{us_aqi ?? '--'}</span>
-              <span className="text-[10px] text-slate-500 font-medium block mt-0.5">Live reading</span>
+            {/* Current AQI Card with Colored Icon and Themed Styling */}
+            <div
+              className="relative overflow-hidden rounded-2xl border px-4 py-3 text-center transition-all shadow-lg backdrop-blur-md min-w-[145px] flex flex-col justify-center"
+              style={{
+                borderColor: `${aqi_info.color}60`,
+                background: `linear-gradient(135deg, ${aqi_info.color}20 0%, rgba(15, 23, 42, 0.9) 100%)`,
+              }}
+              title={`Current Air Quality Index: ${us_aqi ?? '--'} (${aqi_info.category})`}
+            >
+              <div
+                className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider"
+                style={{ color: aqi_info.color }}
+              >
+                <Activity className="w-3.5 h-3.5" style={{ color: aqi_info.color }} />
+                <span>Current AQI</span>
+              </div>
+              <div className="flex items-baseline justify-center gap-2 mt-0.5">
+                <span
+                  className="text-2xl font-black tracking-tight"
+                  style={{ color: aqi_info.color }}
+                >
+                  {us_aqi ?? '--'}
+                </span>
+                <span
+                  className="text-[10px] font-bold px-1.5 py-0.5 rounded-md"
+                  style={{
+                    backgroundColor: `${aqi_info.color}25`,
+                    color: aqi_info.color,
+                    border: `1px solid ${aqi_info.color}50`,
+                  }}
+                >
+                  {aqi_info.category}
+                </span>
+              </div>
+              <span className="text-[10px] text-slate-300 font-medium block mt-0.5">
+                Live reading
+              </span>
             </div>
 
             {/* Peak AQI Today Card - High Visibility & Clean Format */}
