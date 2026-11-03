@@ -349,6 +349,7 @@ export const App: React.FC = () => {
             </div>
             <PollutantCards
               data={airQuality}
+              trends={trends}
               isLoading={isAirQualityLoading}
               onRetry={() => fetchAllData(lat, lon)}
             />

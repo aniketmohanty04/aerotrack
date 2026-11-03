@@ -1,9 +1,11 @@
 import React from 'react';
-import { AirQualityData, PollutantDetail } from '../types';
+import { AirQualityData, PollutantDetail, TrendData } from '../types';
 import { Wind, ShieldAlert, Activity, Flame, Droplets, Sun, Gauge, Info, AlertCircle, RefreshCw } from 'lucide-react';
+import { getHighestAqiOfDay, formatHourDisplay, getAqiCategory } from '../services/openMeteoService';
 
 interface PollutantCardsProps {
   data?: AirQualityData | null;
+  trends?: TrendData | null;
   isLoading?: boolean;
   onRetry?: () => void;
 }
@@ -128,7 +130,7 @@ const PollutantSkeleton: React.FC = () => {
   );
 };
 
-export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading, onRetry }) => {
+export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, trends, isLoading, onRetry }) => {
   if (isLoading) {
     return <PollutantSkeleton />;
   }
@@ -159,6 +161,21 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading,
   }
 
   const { us_aqi, european_aqi, aqi_info, pollutants } = data;
+
+  // Determine highest AQI of the day recorded
+  const highestInfo = React.useMemo(() => {
+    if (data.highest_aqi_today !== undefined && data.highest_aqi_today !== null) {
+      const val = data.highest_aqi_today;
+      const t = data.highest_aqi_time || data.time || '';
+      return {
+        highestAqi: val,
+        timeStr: t,
+        formattedTime: formatHourDisplay(t),
+        aqiInfo: data.highest_aqi_info || getAqiCategory(val),
+      };
+    }
+    return getHighestAqiOfDay(trends, us_aqi, data.time);
+  }, [data, trends, us_aqi]);
 
   const pollutantList: Array<{ key: string; item: PollutantDetail }> = [
     { key: 'pm2_5', item: pollutants.pm2_5 },
@@ -217,7 +234,7 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading,
             </p>
           </div>
 
-          <div className="flex gap-4 border-t md:border-t-0 md:border-l border-slate-800 pt-3 md:pt-0 md:pl-6">
+          <div className="flex flex-wrap gap-3 border-t md:border-t-0 md:border-l border-slate-800 pt-3 md:pt-0 md:pl-6">
             <div className="bg-slate-900/80 px-4 py-2.5 rounded-xl border border-slate-800 text-center">
               <span className="text-[11px] text-slate-400 block uppercase font-medium">US AQI</span>
               <span className="text-xl font-bold text-white">{us_aqi ?? '--'}</span>
@@ -226,6 +243,28 @@ export const PollutantCards: React.FC<PollutantCardsProps> = ({ data, isLoading,
               <span className="text-[11px] text-slate-400 block uppercase font-medium">European AQI</span>
               <span className="text-xl font-bold text-white">{european_aqi ?? '--'}</span>
             </div>
+            {highestInfo && (
+              <div
+                className="bg-slate-900/80 px-4 py-2.5 rounded-xl border text-center transition-colors"
+                style={{ borderColor: `${highestInfo.aqiInfo.color}60` }}
+                title={`Highest AQI recorded today: ${highestInfo.highestAqi} (${highestInfo.aqiInfo.category})`}
+              >
+                <span
+                  className="text-[11px] block uppercase font-medium flex items-center justify-center gap-1"
+                  style={{ color: highestInfo.aqiInfo.color }}
+                >
+                  <Flame className="w-3 h-3" /> Peak Today
+                </span>
+                <span className="text-xl font-bold" style={{ color: highestInfo.aqiInfo.color }}>
+                  {highestInfo.highestAqi}
+                </span>
+                {highestInfo.formattedTime && (
+                  <span className="text-[10px] text-slate-400 block mt-0.5">
+                    at {highestInfo.formattedTime}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

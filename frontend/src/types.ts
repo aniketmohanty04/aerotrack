@@ -23,6 +23,9 @@ export interface AirQualityData {
   us_aqi_capped?: boolean;
   is_capped?: boolean;
   aqi_info: AQIInfo;
+  highest_aqi_today?: number | null;
+  highest_aqi_time?: string | null;
+  highest_aqi_info?: AQIInfo | null;
   pollutants: {
     pm2_5: PollutantDetail;
     pm10: PollutantDetail;
@@ -62,6 +65,8 @@ export interface TrendData {
     last_24h_avg_pm25?: number;
     historical_points_count?: number;
     forecast_points_count?: number;
+    highest_aqi_today?: number | null;
+    highest_aqi_today_time?: string | null;
   };
   trends: TrendPoint[];
 }

@@ -97,7 +97,7 @@ export function getAqiCategory(usAqi: number | null): AQIInfo {
  * Bypasses cloud backend IP rate-limits with zero synthetic data.
  */
 export async function fetchDirectAirQuality(lat: number, lon: number): Promise<AirQualityData> {
-  const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=european_aqi,us_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&timezone=auto`;
+  const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=european_aqi,us_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&hourly=us_aqi,pm2_5&past_days=1&forecast_days=1&timezone=auto`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Open-Meteo responded with HTTP ${res.status}`);
   const data = await res.json();
@@ -112,6 +112,46 @@ export async function fetchDirectAirQuality(lat: number, lon: number): Promise<A
   const usAqi = isCapped ? 500 : rawUsAqi;
   const europeanAqi = current.european_aqi !== null && current.european_aqi > 500 ? 500 : current.european_aqi;
 
+  // Calculate highest AQI recorded today from hourly telemetry
+  let highestAqiToday: number | null = null;
+  let highestAqiTime: string | null = null;
+  const hourly = data.hourly || {};
+  const hTimes: string[] = hourly.time || [];
+  const hAqi: (number | null)[] = hourly.us_aqi || [];
+  const hPm25: (number | null)[] = hourly.pm2_5 || [];
+  const curTimeStr = current.time || '';
+  const todayDate = curTimeStr.includes('T') ? curTimeStr.split('T')[0] : '';
+
+  if (hTimes.length > 0 && todayDate) {
+    let peakVal: number | null = null;
+    let peakTime: string | null = null;
+    for (let i = 0; i < hTimes.length; i++) {
+      const t = hTimes[i];
+      if (t.startsWith(todayDate) && (!curTimeStr || t <= curTimeStr)) {
+        let val = hAqi[i];
+        if (val === null || val === undefined) {
+          val = calculatePm25ToUsAqi(hPm25[i] ?? null);
+        }
+        if (val !== null && val !== undefined) {
+          const clamped = Math.min(500, Math.round(val));
+          if (peakVal === null || clamped > peakVal) {
+            peakVal = clamped;
+            peakTime = t;
+          }
+        }
+      }
+    }
+    if (peakVal !== null) {
+      highestAqiToday = peakVal;
+      highestAqiTime = peakTime;
+    }
+  }
+
+  if (highestAqiToday === null && usAqi !== null) {
+    highestAqiToday = usAqi;
+    highestAqiTime = current.time || null;
+  }
+
   return {
     latitude: lat,
     longitude: lon,
@@ -121,6 +161,9 @@ export async function fetchDirectAirQuality(lat: number, lon: number): Promise<A
     european_aqi: europeanAqi,
     us_aqi_capped: isCapped,
     is_capped: isCapped,
+    highest_aqi_today: highestAqiToday,
+    highest_aqi_time: highestAqiTime,
+    highest_aqi_info: highestAqiToday !== null ? getAqiCategory(highestAqiToday) : null,
     aqi_info: getAqiCategory(usAqi),
     pollutants: {
       pm2_5: {
@@ -169,7 +212,7 @@ export async function fetchDirectAirQuality(lat: number, lon: number): Promise<A
   };
 }
 
-function formatHourDisplay(timeStr: string): string {
+export function formatHourDisplay(timeStr: string): string {
   if (!timeStr) return 'Now';
   if (timeStr.includes('T')) {
     const parts = timeStr.split('T')[1]?.split(':');
@@ -181,6 +224,68 @@ function formatHourDisplay(timeStr: string): string {
     }
   }
   return timeStr;
+}
+
+export interface HighestAqiOfDayResult {
+  highestAqi: number;
+  timeStr: string;
+  formattedTime: string;
+  aqiInfo: AQIInfo;
+}
+
+/**
+ * Calculates the highest recorded US AQI of the current day from historical observations.
+ * Ignores future forecast hours and caps output at 500 EPA standard ceiling.
+ */
+export function getHighestAqiOfDay(
+  trends?: TrendData | null,
+  currentAqi?: number | null,
+  currentTimeStr?: string | null
+): HighestAqiOfDayResult | null {
+  if (trends?.trends && trends.trends.length > 0) {
+    const historicalObs = trends.trends.filter((p) => !p.is_forecast);
+    if (historicalObs.length > 0) {
+      const lastObs = historicalObs[historicalObs.length - 1];
+      const todayDate = (currentTimeStr && currentTimeStr.includes('T'))
+        ? currentTimeStr.split('T')[0]
+        : lastObs.time.split('T')[0];
+
+      const todayObs = historicalObs.filter(
+        (p) => p.time.startsWith(todayDate) && p.us_aqi !== null && p.us_aqi !== undefined
+      );
+
+      if (todayObs.length > 0) {
+        let maxPoint = todayObs[0];
+        for (const pt of todayObs) {
+          if ((pt.us_aqi ?? 0) > (maxPoint.us_aqi ?? 0)) {
+            maxPoint = pt;
+          }
+        }
+
+        const highestVal = Math.min(500, Math.round(maxPoint.us_aqi!));
+        return {
+          highestAqi: highestVal,
+          timeStr: maxPoint.time,
+          formattedTime: formatHourDisplay(maxPoint.time),
+          aqiInfo: getAqiCategory(highestVal),
+        };
+      }
+    }
+  }
+
+  // Fallback to current AQI if no hourly records found for today
+  if (currentAqi !== null && currentAqi !== undefined && !isNaN(currentAqi)) {
+    const highestVal = Math.min(500, Math.round(currentAqi));
+    const tStr = currentTimeStr || new Date().toISOString();
+    return {
+      highestAqi: highestVal,
+      timeStr: tStr,
+      formattedTime: formatHourDisplay(tStr),
+      aqiInfo: getAqiCategory(highestVal),
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -240,6 +345,20 @@ export async function fetchDirectTrends(lat: number, lon: number): Promise<Trend
   const last24 = validPm25.slice(-24);
   const last24Avg = last24.length ? Math.round((last24.reduce((a, b) => a + b, 0) / last24.length) * 10) / 10 : avg;
 
+  const todayDate = localIso.split('T')[0];
+  let highestAqiToday: number | null = null;
+  let highestAqiTodayTime: string | null = null;
+
+  for (const pt of trendPoints) {
+    if (!pt.is_forecast && pt.time.startsWith(todayDate) && pt.us_aqi !== null && pt.us_aqi !== undefined) {
+      const val = Math.min(500, Math.round(pt.us_aqi));
+      if (highestAqiToday === null || val > highestAqiToday) {
+        highestAqiToday = val;
+        highestAqiTodayTime = pt.time;
+      }
+    }
+  }
+
   return {
     latitude: lat,
     longitude: lon,
@@ -250,6 +369,8 @@ export async function fetchDirectTrends(lat: number, lon: number): Promise<Trend
       min_pm25: min,
       max_pm25: max,
       last_24h_avg_pm25: last24Avg,
+      highest_aqi_today: highestAqiToday,
+      highest_aqi_today_time: highestAqiTodayTime,
     },
     trends: trendPoints,
   };

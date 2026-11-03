@@ -247,3 +247,106 @@ def test_invalid_and_negative_values_handling():
         assert stats["avg_pm25"] == 25.0
         assert stats["min_pm25"] == 20.0
         assert stats["max_pm25"] == 30.0
+
+
+def test_calculate_highest_aqi_of_day():
+    """
+    Verify calculate_highest_aqi_of_day only selects recorded values for today
+    up to current observation time and ignores future forecasts.
+    """
+    from backend.main import calculate_highest_aqi_of_day
+
+    test_data = {
+        "current": {"time": "2026-10-14T10:00", "us_aqi": 120},
+        "hourly": {
+            "time": [
+                "2026-10-13T22:00",  # Yesterday
+                "2026-10-14T02:00",  # Today recorded
+                "2026-10-14T06:00",  # Today recorded (PEAK)
+                "2026-10-14T10:00",  # Today current observation
+                "2026-10-14T14:00",  # Today FUTURE forecast (should be ignored)
+            ],
+            "us_aqi": [250, 110, 185, 120, 300],
+            "pm2_5": [120.0, 40.0, 85.0, 45.0, 150.0]
+        }
+    }
+
+    peak_aqi, peak_time = calculate_highest_aqi_of_day(test_data)
+    assert peak_aqi == 185
+    assert peak_time == "2026-10-14T06:00"
+
+
+def test_calculate_highest_aqi_capped_at_500():
+    """
+    Verify that extreme values exceeding EPA max are clamped to 500.
+    """
+    from backend.main import calculate_highest_aqi_of_day
+
+    test_data = {
+        "current": {"time": "2026-10-14T04:00", "us_aqi": 450},
+        "hourly": {
+            "time": ["2026-10-14T01:00", "2026-10-14T04:00"],
+            "us_aqi": [850, 450],
+            "pm2_5": [600.0, 350.0]
+        }
+    }
+
+    peak_aqi, peak_time = calculate_highest_aqi_of_day(test_data)
+    assert peak_aqi == 500
+    assert peak_time == "2026-10-14T01:00"
+
+
+def test_air_quality_and_trends_return_highest_aqi_today():
+    """
+    Verify both /api/air-quality and /api/trends include highest_aqi_today.
+    """
+    client = TestClient(app)
+    fixture = {
+        "latitude": 28.61,
+        "longitude": 77.20,
+        "timezone": "Asia/Kolkata",
+        "utc_offset_seconds": 19800,
+        "current": {
+            "time": "2026-10-14T08:00",
+            "us_aqi": 140,
+            "european_aqi": 60,
+            "pm2_5": 52.0,
+            "pm10": 95.0,
+            "nitrogen_dioxide": 25.0,
+            "sulphur_dioxide": 12.0,
+            "ozone": 30.0,
+            "carbon_monoxide": 500.0
+        },
+        "hourly": {
+            "time": [
+                "2026-10-13T23:00",
+                "2026-10-14T02:00",
+                "2026-10-14T05:00",
+                "2026-10-14T08:00",
+                "2026-10-14T12:00",
+            ],
+            "pm2_5": [40.0, 60.0, 95.0, 52.0, 110.0],
+            "pm10": [70.0, 100.0, 150.0, 95.0, 170.0],
+            "us_aqi": [112, 153, 172, 140, 179],
+            "european_aqi": [40, 60, 80, 60, 85],
+            "ozone": [20.0, 25.0, 30.0, 30.0, 45.0],
+            "nitrogen_dioxide": [15.0, 20.0, 35.0, 25.0, 40.0],
+        }
+    }
+
+    with patch("backend.main.get_shared_open_meteo_data", return_value=fixture):
+        # 1. Check /api/air-quality
+        aq_resp = client.get("/api/air-quality/28.61/77.20")
+        assert aq_resp.status_code == 200
+        aq_data = aq_resp.json()
+        assert aq_data["highest_aqi_today"] == 172
+        assert aq_data["highest_aqi_time"] == "2026-10-14T05:00"
+        assert aq_data["highest_aqi_info"]["category"] == "Unhealthy"
+
+        # 2. Check /api/trends
+        trends_resp = client.get("/api/trends/28.61/77.20")
+        assert trends_resp.status_code == 200
+        tr_data = trends_resp.json()
+        assert tr_data["stats"]["highest_aqi_today"] == 172
+        assert tr_data["stats"]["highest_aqi_today_time"] == "2026-10-14T05:00"
+

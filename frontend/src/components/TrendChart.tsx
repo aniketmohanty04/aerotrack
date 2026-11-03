@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import { TrendData } from '../types';
 import { TrendingUp, Calendar, Info, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { getHighestAqiOfDay, formatHourDisplay } from '../services/openMeteoService';
 
 interface TrendChartProps {
   data: TrendData;
@@ -104,6 +105,18 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
   const [metric, setMetric] = useState<'pm2_5' | 'us_aqi'>('pm2_5');
 
   const { trends, stats } = data;
+
+  // Highest AQI of today recorded
+  const highestAqiOfDay = React.useMemo(() => {
+    if (stats.highest_aqi_today !== undefined && stats.highest_aqi_today !== null) {
+      return {
+        val: stats.highest_aqi_today,
+        time: stats.highest_aqi_today_time ? formatHourDisplay(stats.highest_aqi_today_time) : null,
+      };
+    }
+    const computed = getHighestAqiOfDay(data);
+    return computed ? { val: computed.highestAqi, time: computed.formattedTime } : null;
+  }, [data, stats]);
 
   // Compute round Y-axis domain and ticks
   const metricValues = trends
@@ -283,7 +296,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
       </div>
 
       {/* Mini Stats Bar - Strictly Historical Statistics */}
-      <div className="grid grid-cols-3 gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 text-center">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 text-center">
         <div>
           <span className="text-[11px] text-slate-400 block font-medium">7-Day Historical Avg</span>
           <span className="text-sm sm:text-base font-bold text-cyan-400 flex items-center justify-center gap-1">
@@ -304,6 +317,15 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
             {stats.max_pm25} <Ugm3Unit iconSize="w-2.5 h-2.5" />
           </span>
           <span className="text-[10px] text-slate-400 block mt-0.5">Observed spike</span>
+        </div>
+        <div>
+          <span className="text-[11px] text-amber-400 block font-medium">Highest AQI Today</span>
+          <span className="text-sm sm:text-base font-bold text-amber-300">
+            {highestAqiOfDay?.val ?? '--'}
+          </span>
+          <span className="text-[10px] text-slate-400 block mt-0.5">
+            {highestAqiOfDay?.time ? `at ${highestAqiOfDay.time}` : 'Observed peak'}
+          </span>
         </div>
       </div>
 

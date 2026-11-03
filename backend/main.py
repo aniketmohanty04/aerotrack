@@ -250,6 +250,50 @@ def calculate_pm25_to_us_aqi(pm25: Optional[float]) -> Optional[int]:
         return None
 
 
+def calculate_highest_aqi_of_day(data: Dict[str, Any]) -> tuple[Optional[int], Optional[str]]:
+    """
+    Computes the highest US AQI recorded today (up to current time in local timezone).
+    Returns (highest_aqi, record_time_str).
+    """
+    hourly = data.get("hourly", {})
+    times = hourly.get("time", [])
+    us_aqis = hourly.get("us_aqi", [])
+    pm25_vals = hourly.get("pm2_5", [])
+    current = data.get("current", {})
+    current_time = current.get("time")
+
+    if not times:
+        cur_aqi = current.get("us_aqi")
+        if cur_aqi is None and current.get("pm2_5") is not None:
+            cur_aqi = calculate_pm25_to_us_aqi(current.get("pm2_5"))
+        return (min(500, int(round(cur_aqi))) if cur_aqi is not None else None, current_time)
+
+    # Today's date string in local timezone: "YYYY-MM-DD"
+    today_str = current_time.split("T")[0] if current_time and "T" in current_time else (times[-1].split("T")[0] if times else "")
+
+    today_records: List[tuple[int, str]] = []
+    for i, t in enumerate(times):
+        if not t or not isinstance(t, str):
+            continue
+        # Only consider recorded observations for today up to current observation time
+        if t.startswith(today_str) and (current_time is None or t <= current_time):
+            aqi = us_aqis[i] if i < len(us_aqis) else None
+            if aqi is None and i < len(pm25_vals) and pm25_vals[i] is not None:
+                aqi = calculate_pm25_to_us_aqi(pm25_vals[i])
+            if aqi is not None:
+                today_records.append((min(500, int(round(aqi))), t))
+
+    if today_records:
+        highest_record = max(today_records, key=lambda x: x[0])
+        return highest_record[0], highest_record[1]
+
+    # Fallback if no records found for today yet (e.g. at 00:00 before first hourly record)
+    cur_aqi = current.get("us_aqi")
+    if cur_aqi is None and current.get("pm2_5") is not None:
+        cur_aqi = calculate_pm25_to_us_aqi(current.get("pm2_5"))
+    return (min(500, int(round(cur_aqi))) if cur_aqi is not None else None, current_time)
+
+
 
 @app.get("/api/location/search")
 async def search_location(query: str = Query(..., min_length=2)):
@@ -522,6 +566,8 @@ async def get_air_quality(lat: float, lon: float):
         }
 
         is_capped = bool(original_us_aqi is not None and original_us_aqi > 500)
+        highest_aqi_today, highest_aqi_time = calculate_highest_aqi_of_day(data)
+        highest_aqi_info = get_aqi_category(highest_aqi_today) if highest_aqi_today is not None else None
 
         return {
             "latitude": lat,
@@ -532,6 +578,9 @@ async def get_air_quality(lat: float, lon: float):
             "european_aqi": european_aqi,
             "us_aqi_capped": is_capped,
             "is_capped": is_capped,
+            "highest_aqi_today": highest_aqi_today,
+            "highest_aqi_time": highest_aqi_time,
+            "highest_aqi_info": highest_aqi_info,
             "aqi_info": aqi_info,
             "pollutants": pollutants
         }
@@ -674,6 +723,8 @@ async def get_trends(lat: float, lon: float):
         last_24h_pm25 = [r["pm2_5"] for r in last_24h_obs]
         last_24h_avg_pm25 = round(sum(last_24h_pm25) / len(last_24h_pm25), 1) if last_24h_pm25 else avg_pm25
 
+        highest_aqi_today, highest_aqi_time = calculate_highest_aqi_of_day(data)
+
         # Format output points (strip internal datetime objects)
         trend_points = []
         for r in sorted_records:
@@ -704,6 +755,8 @@ async def get_trends(lat: float, lon: float):
                 "min_pm25": min_pm25,
                 "max_pm25": max_pm25,
                 "last_24h_avg_pm25": last_24h_avg_pm25,
+                "highest_aqi_today": highest_aqi_today,
+                "highest_aqi_today_time": highest_aqi_time,
                 "historical_points_count": len(valid_hist_pm25),
                 "forecast_points_count": len(forecast_obs),
                 "last_24h_points_count": len(last_24h_pm25)
